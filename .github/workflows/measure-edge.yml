@@ -1,0 +1,64 @@
+name: Measure edge timeout
+
+# Manual only. Sends two long requests to the real API (one plain, one streamed) and records how
+# long the edge waits before a 524, and how the stream behaves: time to first byte and first
+# content, comment-line cadence, the longest silence, the usage chunk and [DONE]. Results go to
+# the job summary and a JSON artifact; docs/errors.md quotes them. Needs the MOLOCHAI_API_KEY
+# secret (a low-credit key); each run spends at most two replies' worth of output tokens.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Model id (a reasoning model makes long replies)
+        default: glm-5.3-flash
+        required: true
+      only:
+        description: "Run only one mode: plain or stream (empty: both)"
+        default: ""
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: measure-edge
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Measure
+        env:
+          MOLOCHAI_API_KEY: ${{ secrets.MOLOCHAI_API_KEY }}
+          MEASURE_MODEL: ${{ inputs.model }}
+          ONLY: ${{ inputs.only }}
+        run: |
+          if [ -z "$MOLOCHAI_API_KEY" ]; then
+            echo "::error::The MOLOCHAI_API_KEY secret is not available to this repository."
+            exit 1
+          fi
+          args=(--json edge.json --max-seconds 420)
+          if [ -n "$ONLY" ]; then args+=(--only "$ONLY"); fi
+          python tools/measure_edge.py "${args[@]}"
+          {
+            echo '## Edge measurement'
+            echo
+            echo '```json'
+            cat edge.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: edge-measurement
+          path: edge.json
+          if-no-files-found: ignore

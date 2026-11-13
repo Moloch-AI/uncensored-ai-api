@@ -83,7 +83,7 @@ in [`clients/python/tests/mock_server.py`](../clients/python/tests/mock_server.p
 | Token | Result |
 |---|---|
 | missing or empty | `401 {"message":"Unauthenticated."}` on every route except `/health` |
-| `mock-no-plan` | `402 no_active_plan` on `/api/v1/*`; `/api/auth/me` answers with `plan: null` |
+| `mock-no-plan` | `402 no_active_plan` on `/api/v1/*`, with `X-Should-Retry: false`; `/api/auth/me` answers with `plan: null` |
 | `mock-unverified` | `403 {"code":"email_unverified"}` on `/api/v1/*`; `/api/auth/me` answers with `email_verified: false` |
 | anything else | accepted |
 
@@ -147,9 +147,9 @@ earlier messages are ignored.
 | Marker | Plain request | Streamed request |
 |---|---|---|
 | `[mock:rate-limit]` | 429 `Too Many Attempts.`, `Retry-After: 1` | same |
-| `[mock:quota]` | 429 `quota_exceeded`, `resets_at` one hour ahead, `plan`, `monthly_used`, `monthly_cap` | same |
-| `[mock:session-quota]` | 429 `session_quota_exceeded`, `resets_at` | same |
-| `[mock:context]` | 413 `context_length_exceeded`, `context_cap: 65536`, `bound_by: "plan"` | same |
+| `[mock:quota]` | 429 `quota_exceeded`, `resets_at` one hour ahead, `plan`, `monthly_used`, `monthly_cap`, header `X-Should-Retry: false` | same |
+| `[mock:session-quota]` | 429 `session_quota_exceeded`, `resets_at`, header `X-Should-Retry: false` | same |
+| `[mock:context]` | 413 `context_length_exceeded`, `context_cap: 65536`, `bound_by: "plan"`, header `X-Should-Retry: false` | same |
 | `[mock:busy]` | 503 `server_busy` | same |
 | `[mock:unavailable]` | 503 `model_unavailable` with `model` | same |
 | `[mock:upstream-error]` | 502 `upstream_error`, `status: 500`, `body`, `request_id` | same |
