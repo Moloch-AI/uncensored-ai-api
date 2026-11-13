@@ -40,7 +40,7 @@
     "format": "biome format --write ."
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.4",
+    "@biomejs/biome": "2.6.6",
     "@redocly/cli": "2.72.1",
     "ajv": "^8.20.0",
     "yaml": "^2.9.1"
