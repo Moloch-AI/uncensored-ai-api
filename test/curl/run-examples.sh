@@ -4,12 +4,21 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-PORT="${MOCK_PORT:-4011}"
 LOG="$(mktemp)"
 
-node "$ROOT/mock-server/server.mjs" --port "$PORT" --delay-ms 0 --quiet >"$LOG" 2>&1 &
+# Port 0: the mock picks a free port and prints the URL it listens on.
+node "$ROOT/mock-server/server.mjs" --port 0 --delay-ms 0 --quiet >"$LOG" 2>&1 &
 MOCK_PID=$!
-trap 'kill "$MOCK_PID" 2>/dev/null || true; rm -f "$LOG"' EXIT
+
+stop_mock() {
+  # Git Bash on Windows cannot signal a native node.exe; use its Windows PID.
+  if [[ -r "/proc/$MOCK_PID/winpid" ]] && command -v taskkill >/dev/null; then
+    taskkill //F //PID "$(cat "/proc/$MOCK_PID/winpid")" >/dev/null 2>&1 || true
+  fi
+  kill "$MOCK_PID" 2>/dev/null || true
+  rm -f "$LOG"
+}
+trap stop_mock EXIT
 
 for _ in $(seq 1 50); do
   grep -q "listening on" "$LOG" && break
@@ -17,7 +26,8 @@ for _ in $(seq 1 50); do
 done
 grep -q "listening on" "$LOG" || { cat "$LOG"; echo "mock did not start" >&2; exit 1; }
 
-export MOLOCHAI_BASE_URL="http://127.0.0.1:$PORT/api/v1"
+MOLOCHAI_BASE_URL="$(sed -n 's/^MolochAI mock API listening on //p' "$LOG" | tr -d '\r')"
+export MOLOCHAI_BASE_URL
 export MOLOCHAI_API_KEY="mock-key"
 
 failures=0
