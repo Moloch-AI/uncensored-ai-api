@@ -1,0 +1,27 @@
+# Tool settings for the Python reference client (clients/python). This repo is
+# not a Python package: copy clients/python/molochai_http.py into your project.
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+src = ["clients/python"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "A"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["clients/python"]
+mypy_path = "clients/python"
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*", "demo"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["clients/python/tests"]
+pythonpath = ["clients/python"]
+addopts = "-ra"

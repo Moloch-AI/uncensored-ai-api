@@ -1,0 +1,48 @@
+{
+  "name": "uncensored-ai-api",
+  "version": "0.1.0",
+  "description": "The MolochAI HTTP contract: OpenAPI 3.1 spec, curl examples, dependency-free reference clients and a zero-dependency mock server.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Moloch-AI/uncensored-ai-api.git"
+  },
+  "homepage": "https://github.com/Moloch-AI/uncensored-ai-api#readme",
+  "bugs": "https://github.com/Moloch-AI/uncensored-ai-api/issues",
+  "bin": {
+    "molochai-mock": "mock-server/server.mjs"
+  },
+  "exports": {
+    ".": "./mock-server/app.mjs",
+    "./mock-server": "./mock-server/app.mjs",
+    "./openapi.yaml": "./openapi.yaml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "mock-server/",
+    "openapi.yaml",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "mock": "node mock-server/server.mjs",
+    "test": "npm run test:mock && npm run test:conformance && npm run test:node-client",
+    "test:mock": "node --test test/mock-server/*.test.mjs",
+    "test:conformance": "node --test test/conformance/*.test.mjs",
+    "test:node-client": "node --test clients/node/test/*.test.mjs",
+    "lint": "biome check . && npm run lint:spec",
+    "lint:spec": "redocly lint openapi.yaml",
+    "format": "biome format --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.4",
+    "@redocly/cli": "2.72.1",
+    "ajv": "^8.20.0",
+    "yaml": "^2.9.1"
+  }
+}

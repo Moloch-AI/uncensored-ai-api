@@ -1,0 +1,1321 @@
+openapi: 3.1.0
+
+info:
+  title: MolochAI API
+  version: 0.1.0
+  summary: OpenAI-compatible chat completions for five less-restricted open-weight models.
+  description: |
+    The HTTP contract of the MolochAI API: chat completions (plain and streamed),
+    the model list, and the account endpoint. Requests and responses follow the
+    OpenAI chat completions format, with the extensions and limits described here.
+
+    **Authentication.** Every request carries `Authorization: Bearer <api key>`.
+    Keys are created in the dashboard (Account, API keys), are shown once, do not
+    expire on a timer and are not scoped: a key can read account details and
+    create invoices. Keep keys on a server; never ship one to a browser or a
+    mobile app.
+
+    **Errors.** Check the HTTP status first. Bodies come in three shapes:
+
+    | Shape | Example | Used by |
+    |---|---|---|
+    | A. Gateway | `{"error": {"type": "...", "message": "...", ...}}` | 402, 413, 429 quota, 502, 503, 504, in-stream errors |
+    | B. Validation | `{"message": "...", "errors": {"model": ["..."]}}` | 422 |
+    | C. Bare message | `{"message": "Unauthenticated."}` | 401, 403 (with `code`), 429 rate limit |
+
+    Non-JSON bodies happen too (Cloudflare's 524 page is HTML), so never assume
+    JSON. Messages are written for people and can change: read `type`, `code`,
+    `resets_at` and the headers instead of the text.
+
+    **Retries.** Retry 502, 503 `server_busy`, 504, 524 and connection errors
+    with exponential backoff and jitter. On the rate-limit 429, wait for
+    `Retry-After` (and cap the wait). Never retry quota 429s automatically
+    (surface `resets_at`), and never retry 401, 402, 403, 413 or 422.
+    `model_unavailable` may clear after a while; try it a few times at most,
+    then pick another model. If your HTTP client already retries (the OpenAI
+    SDKs do), make sure the two layers do not multiply.
+
+    **Rate limit.** 60 requests per minute per account, reported in
+    `X-RateLimit-Limit` and `X-RateLimit-Remaining` on `/v1` responses.
+
+    **Limits.** The context window is set by the plan (65,536 to 200,704 tokens;
+    401,408 on Enterprise+), or by the serving server when that is lower. Output
+    is capped per reply by the plan (9,000 tokens; 30,000 on Enterprise+). See
+    [pricing](https://molochai.dev/pricing?utm_source=github&utm_medium=oss&utm_campaign=uncensored-ai-api)
+    for plans.
+
+    **Models.** The models are refusal-reduced builds of open-weight base
+    models; the base developers do not publish or endorse them. Refusal behavior
+    is reduced, not removed, and the replies are not more accurate. The
+    [Acceptable Use Policy](https://molochai.dev/acceptable-use?utm_source=github&utm_medium=oss&utm_campaign=uncensored-ai-api)
+    applies. Fetch `GET /models` rather than hardcoding ids.
+
+    The second server entry is the local mock from this repository
+    (`node mock-server/server.mjs`), a test double with canned replies.
+  license:
+    name: MIT
+    identifier: MIT
+  contact:
+    name: MolochAI support
+    url: https://molochai.dev/contact?utm_source=github&utm_medium=oss&utm_campaign=uncensored-ai-api
+
+externalDocs:
+  description: MolochAI documentation
+  url: https://molochai.dev/docs?utm_source=github&utm_medium=oss&utm_campaign=uncensored-ai-api
+
+servers:
+  - url: https://api.molochai.dev/api/v1
+    description: Production
+  - url: http://127.0.0.1:4010/api/v1
+    description: Local mock server (mock-server/server.mjs in this repository)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Chat
+    description: Chat completions, plain and streamed.
+  - name: Models
+    description: The public model catalog and what is being served right now.
+  - name: Account
+    description: The account behind the API key.
+
+paths:
+  /chat/completions:
+    post:
+      tags: [Chat]
+      operationId: createChatCompletion
+      summary: Create a chat completion
+      description: |
+        Send a conversation and get the assistant's next message, as one JSON
+        object or (with `"stream": true`) as server-sent events.
+
+        The gateway prepends a short identity system message. If your first
+        message is a system message, the identity text goes above yours in the
+        same message and yours is kept.
+
+        Prefer streaming for anything long: Cloudflare in front of the API gives
+        up on a response after about 100 seconds, so a long plain request can
+        fail with 524 at the edge.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+            examples:
+              simple:
+                summary: One user message
+                value:
+                  model: glm-5.3-flash
+                  messages:
+                    - role: user
+                      content: Explain server-sent events in two sentences.
+              streamed:
+                summary: Streamed, with a system message
+                value:
+                  model: llama-3.3-70b-instruct-abliterated
+                  stream: true
+                  temperature: 0.7
+                  messages:
+                    - role: system
+                      content: Answer briefly.
+                    - role: user
+                      content: Name three HTTP status codes worth retrying.
+              tools:
+                summary: Offering a tool
+                value:
+                  model: glm-5.3-flash
+                  messages:
+                    - role: user
+                      content: What is the weather in Oslo?
+                  tools:
+                    - type: function
+                      function:
+                        name: get_weather
+                        description: Current weather for a city
+                        parameters:
+                          type: object
+                          properties:
+                            city:
+                              type: string
+                          required: [city]
+      responses:
+        '200':
+          description: |
+            The completion. `Content-Type` is `application/json` for a plain
+            request and `text/event-stream` when `stream` is true.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletion'
+              examples:
+                text:
+                  summary: A text reply from a reasoning model
+                  value:
+                    id: chatcmpl-mock-1
+                    object: chat.completion
+                    created: 1794535036
+                    model: glm-5.3-flash
+                    choices:
+                      - index: 0
+                        finish_reason: stop
+                        message:
+                          role: assistant
+                          content: 'Mock reply from glm-5.3-flash: Explain server-sent events in two sentences.'
+                          reasoning_content: Mock reasoning for glm-5.3-flash.
+                    usage:
+                      prompt_tokens: 11
+                      completion_tokens: 30
+                      total_tokens: 41
+                toolCall:
+                  summary: A tool call
+                  value:
+                    id: chatcmpl-mock-2
+                    object: chat.completion
+                    created: 1794535036
+                    model: glm-5.3-flash
+                    choices:
+                      - index: 0
+                        finish_reason: tool_calls
+                        message:
+                          role: assistant
+                          content: null
+                          reasoning_content: Mock reasoning for glm-5.3-flash.
+                          tool_calls:
+                            - id: call_mock_1
+                              type: function
+                              function:
+                                name: get_weather
+                                arguments: '{"city":"example"}'
+                    usage:
+                      prompt_tokens: 7
+                      completion_tokens: 13
+                      total_tokens: 20
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  A stream of server-sent events. Each event is one or more lines
+                  followed by a blank line. Every `data:` payload except the final
+                  `[DONE]` is JSON matching `ChatCompletionStreamEvent`
+                  (`$defs/event` below).
+
+                  **Line types**
+
+                  - `data: <JSON>`: a `chat.completion.chunk`
+                    (`ChatCompletionChunk`), or an error event (`StreamErrorEvent`).
+                  - `data: [DONE]`: the end of the stream.
+                  - Lines starting with `:` are comments and must be ignored by
+                    parsers. Seen in practice: `: ka` and `: hb` (keep-alives,
+                    about once a second during silence) and
+                    `: queued · position 2 of 3 · waiting 4s` (waiting for a
+                    slot). Treat any comment generically; parse the queue format
+                    only as optional progress information.
+
+                  **Order of a successful stream**
+
+                  1. A chunk with `delta.role`.
+                  2. `delta.reasoning_content` chunks (thinking models, when the
+                     server separates reasoning).
+                  3. `delta.content` chunks (or `delta.tool_calls`). Inline
+                     `<think>` blocks are stripped from `delta.content`.
+                  4. A chunk with `finish_reason`.
+                  5. The usage chunk: `"choices": []` and a `usage` object. Usage
+                     is always sent; check for empty `choices` before indexing.
+                  6. `data: [DONE]`.
+
+                  **Tool calls.** Arguments are not streamed incrementally here:
+                  they arrive whole in one chunk. Accumulate `arguments` fragments
+                  by `index` anyway, since other providers fragment them.
+
+                  **Cap notice.** When a reply stops at the plan's output cap with
+                  no tool call, the gateway appends this exact text to the content
+                  and `finish_reason` is `length`:
+                  `\n\n[Response is too large for your current plan. Try a smaller request.]`
+
+                  **Errors after the stream opened** keep HTTP 200. They arrive as
+                  one data event, `{"error": {"type": "...", "message": "..."}}`,
+                  followed by `data: [DONE]`, with no finish or usage chunk.
+                  Types: `server_busy`, `upstream_unreachable`,
+                  `upstream_timeout`, `upstream_error` (has `status`) and
+                  `preempted` (the server was reclaimed mid-reply; retry in a
+                  minute).
+                $defs:
+                  event:
+                    $ref: '#/components/schemas/ChatCompletionStreamEvent'
+              example: |+
+                : queued · position 1 of 2 · waiting 1s
+
+                data: {"id":"chatcmpl-mock-3","object":"chat.completion.chunk","created":1794535036,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+                data: {"id":"chatcmpl-mock-3","object":"chat.completion.chunk","created":1794535036,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"reasoning_content":"Mock reasoning "},"finish_reason":null}]}
+
+                : ka
+
+                data: {"id":"chatcmpl-mock-3","object":"chat.completion.chunk","created":1794535036,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"content":"Mock reply "},"finish_reason":null}]}
+
+                data: {"id":"chatcmpl-mock-3","object":"chat.completion.chunk","created":1794535036,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+                data: {"id":"chatcmpl-mock-3","object":"chat.completion.chunk","created":1794535036,"model":"glm-5.3-flash","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":7,"total_tokens":10}}
+
+                data: [DONE]
+
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '402':
+          $ref: '#/components/responses/NoActivePlan'
+        '403':
+          $ref: '#/components/responses/EmailUnverified'
+        '413':
+          $ref: '#/components/responses/ContextLengthExceeded'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+        '524':
+          $ref: '#/components/responses/CloudflareTimeout'
+        default:
+          $ref: '#/components/responses/UpstreamError'
+
+  /models:
+    get:
+      tags: [Models]
+      operationId: listModels
+      summary: List models
+      description: |
+        The public catalog, with which models a server is serving right now.
+        `name` and `available` are MolochAI extensions to the OpenAI format.
+        This endpoint is behind the quota check: an account with no plan and no
+        credit gets 402.
+      responses:
+        '200':
+          description: The model list.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+              example:
+                object: list
+                data:
+                  - id: glm-5.3-flash
+                    object: model
+                    created: 0
+                    owned_by: molochai
+                    name: GLM-5.3-Flash
+                    available: true
+                  - id: llama-3.3-70b-instruct-abliterated
+                    object: model
+                    created: 0
+                    owned_by: molochai
+                    name: Llama-3.3-70B-Instruct-abliterated-GGUF
+                    available: false
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '402':
+          $ref: '#/components/responses/NoActivePlan'
+        '403':
+          $ref: '#/components/responses/EmailUnverified'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /auth/me:
+    servers:
+      - url: https://api.molochai.dev/api
+        description: Production (outside /v1)
+      - url: http://127.0.0.1:4010/api
+        description: Local mock server (outside /v1)
+    get:
+      tags: [Account]
+      operationId: getAccount
+      summary: Get the account behind the key
+      description: |
+        Lives outside `/api/v1`: derive it from the base URL by replacing a
+        trailing `/v1` with `/auth/me`. It is not behind the email or quota
+        checks, so it is how a client learns that the email is unverified or
+        that there is no plan. Per-model `context_limit` is the smaller of the
+        plan's limit and the serving server's limit.
+      responses:
+        '200':
+          description: The account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+              example:
+                id: 1
+                email: dev@example.com
+                plan: pro
+                plan_expires_at: '2026-12-13T01:57:16+00:00'
+                tier: pro
+                credit_usd: 0
+                email_verified: true
+                api_base: https://api.molochai.dev/api/v1
+                default_model: glm-5.3-flash
+                context_limit: 65536
+                models:
+                  - id: glm-5.3-flash
+                    name: GLM-5.3-Flash
+                    available: true
+                    context_limit: 65536
+                  - id: llama-3.3-70b-instruct-abliterated
+                    name: Llama-3.3-70B-Instruct-abliterated-GGUF
+                    available: false
+                    context_limit: null
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        An API key from the dashboard (Account, API keys). Keys are not scoped
+        and do not expire on a timer. Keep them server-side.
+
+  headers:
+    X-RateLimit-Limit:
+      description: Requests allowed per minute for this account (60).
+      schema:
+        type: integer
+        minimum: 0
+    X-RateLimit-Remaining:
+      description: Requests left in the current one-minute window.
+      schema:
+        type: integer
+        minimum: 0
+    Retry-After:
+      description: |
+        Seconds until a request will be accepted again. Sent with the rate-limit
+        429 (`{"message": "Too Many Attempts."}`) only; quota 429s carry
+        `resets_at` in the body instead.
+      schema:
+        type: integer
+        minimum: 0
+
+  responses:
+    Unauthenticated:
+      description: The key is missing, mistyped or revoked. Do not retry; fix the key.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UnauthenticatedError'
+          example:
+            message: Unauthenticated.
+
+    NoActivePlan:
+      description: |
+        The key is valid, but the account has no active plan and no credit. A
+        new key will not help. Do not retry; buy a plan or add credit.
+      headers:
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/X-RateLimit-Limit'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/X-RateLimit-Remaining'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/NoActivePlanError'
+          example:
+            error:
+              type: no_active_plan
+              message: This account has no active plan and no account credit.
+              plan: null
+
+    EmailUnverified:
+      description: The account has not confirmed its email. Do not retry.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EmailUnverifiedError'
+          example:
+            message: Verify your email to continue.
+            code: email_unverified
+
+    ContextLengthExceeded:
+      description: |
+        The prompt does not fit the context window. The gateway checks this
+        before sending the request to a server and does not trim your
+        conversation. Retry only after trimming.
+      headers:
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/X-RateLimit-Limit'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/X-RateLimit-Remaining'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ContextLengthExceededError'
+          example:
+            error:
+              type: context_length_exceeded
+              message: This request is larger than your plan allows.
+              estimated_tokens: 70000
+              context_cap: 65536
+              bound_by: plan
+              plan: pro
+
+    ValidationFailed:
+      description: |
+        The request is invalid: a missing or unknown `model`, missing or empty
+        `messages`, a message without a valid `role`, or a parameter out of
+        range. Do not retry; fix the request.
+      headers:
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/X-RateLimit-Limit'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/X-RateLimit-Remaining'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationError'
+          example:
+            message: The selected model is invalid.
+            errors:
+              model:
+                - The selected model is invalid.
+
+    TooManyRequests:
+      description: |
+        Three different 429s. Tell them apart by the body, not the message:
+
+        - Rate limit, `{"message": "Too Many Attempts."}` with `Retry-After`:
+          more than 60 requests in a minute. Retry after `Retry-After` seconds.
+        - `quota_exceeded`: the plan's quota is used up and the account has no
+          credit. Do not retry automatically; it clears at `resets_at`.
+        - `session_quota_exceeded`: the 5-hour session cap was reached (a fixed
+          window from the session's first request). It clears at `resets_at`.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/Retry-After'
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/X-RateLimit-Limit'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/X-RateLimit-Remaining'
+      content:
+        application/json:
+          schema:
+            anyOf:
+              - $ref: '#/components/schemas/RateLimitError'
+              - $ref: '#/components/schemas/QuotaExceededError'
+              - $ref: '#/components/schemas/SessionQuotaExceededError'
+          examples:
+            rateLimit:
+              summary: Over 60 requests per minute (has Retry-After)
+              value:
+                message: Too Many Attempts.
+            monthlyQuota:
+              summary: Monthly quota used, no credit
+              value:
+                error:
+                  type: quota_exceeded
+                  message: Monthly token cap reached for your plan.
+                  resets_at: '2026-12-01T00:00:00+00:00'
+                  plan: pro
+                  monthly_used: 10000000
+                  monthly_cap: 10000000
+            weeklyQuota:
+              summary: Whole quota used within one calendar week
+              value:
+                error:
+                  type: quota_exceeded
+                  message: Weekly token cap reached for your plan.
+                  resets_at: '2026-11-16T00:00:00+00:00'
+                  plan: pro
+                  weekly_used: 10000000
+                  weekly_cap: 10000000
+            sessionQuota:
+              summary: Session cap reached
+              value:
+                error:
+                  type: session_quota_exceeded
+                  message: Per-session token cap reached for your plan.
+                  resets_at: '2026-11-13T07:00:00+00:00'
+                  plan: pro
+                  session_used: 500000
+                  session_cap: 500000
+
+    BadGateway:
+      description: |
+        An upstream problem: the inference server could not be reached
+        (`upstream_unreachable`), took too long (`upstream_timeout`), returned
+        an error (`upstream_error`, with its `status`) or returned no usage
+        accounting (`no_usage_accounting`). Retry with backoff.
+      headers:
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/X-RateLimit-Limit'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/X-RateLimit-Remaining'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UpstreamFailureError'
+          example:
+            error:
+              type: upstream_unreachable
+              message: Upstream inference unreachable.
+              request_id: 0f6c2a9e-0000-4000-8000-000000000000
+              elapsed_s: 0.42
+
+    ServiceUnavailable:
+      description: |
+        `server_busy`: no slot is free; retry with backoff.
+        `model_unavailable`: no server is serving that model right now. The
+        request is never rerouted to another model. Try a few times at most,
+        then pick another model (check `available` in `GET /models`).
+      headers:
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/X-RateLimit-Limit'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/X-RateLimit-Remaining'
+      content:
+        application/json:
+          schema:
+            anyOf:
+              - $ref: '#/components/schemas/ServerBusyError'
+              - $ref: '#/components/schemas/ModelUnavailableError'
+          examples:
+            serverBusy:
+              summary: No slot free
+              value:
+                error:
+                  type: server_busy
+                  message: All inference servers are busy right now. Please retry in a minute.
+            modelUnavailable:
+              summary: Nothing serves this model
+              value:
+                error:
+                  type: model_unavailable
+                  message: GLM-5.3-Flash is not available right now.
+                  model: glm-5.3-flash
+
+    GatewayTimeout:
+      description: |
+        `upstream_timeout`: the upstream time limit was hit on a plain request.
+        Retry with backoff, and prefer streaming for long replies.
+      headers:
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/X-RateLimit-Limit'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/X-RateLimit-Remaining'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UpstreamFailureError'
+          example:
+            error:
+              type: upstream_timeout
+              message: Upstream inference exceeded the time limit.
+              request_id: 0f6c2a9e-0000-4000-8000-000000000000
+              elapsed_s: 70.1
+
+    CloudflareTimeout:
+      description: |
+        Cloudflare's edge timeout (about 100 seconds) on a plain request. The
+        body is an HTML page, not JSON, and gateway headers are absent. Retry
+        with backoff, and use streaming for long replies.
+      content:
+        text/html:
+          schema:
+            type: string
+          example: '<!DOCTYPE html><html><head><title>524: A timeout occurred</title></head><body>...</body></html>'
+
+    UpstreamError:
+      description: |
+        Any other status. When the inference server itself returns an error,
+        the gateway answers `upstream_error` with the server's status (4xx or
+        5xx), its `body` (truncated) and a `request_id`. Retry 5xx with backoff.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GatewayError'
+          example:
+            error:
+              type: upstream_error
+              message: Upstream inference error.
+              status: 500
+              body: '{"error":"internal"}'
+              request_id: 0f6c2a9e-0000-4000-8000-000000000000
+
+  schemas:
+    # ----------------------------------------------------------------- request
+    ChatCompletionRequest:
+      type: object
+      required: [model, messages]
+      description: |
+        Only the fields listed here reach the model. These are accepted and
+        silently dropped, with no error: `stop`, `n`, `seed`, `response_format`,
+        `top_k`, `frequency_penalty`, `presence_penalty`, `logprobs`,
+        `logit_bias`, `user`, `stream_options`. There is no JSON mode: ask for
+        JSON in the prompt and validate the reply. Other unknown fields are
+        ignored as well.
+
+        Reasoning on/off and effort are fixed per model and cannot be changed
+        per request. Default sampling when omitted: temperature 0.6 / top_p 0.95
+        for models with reasoning on, 0.7 / 0.8 for models with reasoning off.
+      properties:
+        model:
+          type: string
+          description: |
+            A model id from `GET /models`. An unknown id is 422. A known id with
+            no server serving it is 503 `model_unavailable`; it is never
+            rerouted to another model.
+          examples: [glm-5.3-flash]
+        messages:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        stream:
+          type: boolean
+          default: false
+          description: Stream the reply as server-sent events.
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+        max_tokens:
+          type: integer
+          minimum: 1
+          maximum: 65536
+          description: |
+            Accepted for compatibility, but it has **no effect**: the plan's
+            output cap per reply is always used.
+        tools:
+          type: array
+          description: Tools the model may call, in the OpenAI format.
+          items:
+            $ref: '#/components/schemas/Tool'
+        tool_choice:
+          $ref: '#/components/schemas/ToolChoice'
+
+    ChatMessage:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          description: |
+            A string, an array of content parts, or null (an assistant message
+            that only calls tools).
+          anyOf:
+            - type: string
+            - type: array
+              items:
+                $ref: '#/components/schemas/ContentPart'
+            - type: 'null'
+        name:
+          type: string
+        tool_calls:
+          type: array
+          description: Assistant messages only. Send back the calls you received.
+          items:
+            $ref: '#/components/schemas/ToolCall'
+        tool_call_id:
+          type: string
+          description: Tool messages only. The `id` of the call this message answers.
+        reasoning_content:
+          type: string
+          description: |
+            Assistant messages only. Send back the `reasoning_content` you
+            received to keep reasoning across turns. Non-string values are
+            dropped.
+
+    ContentPart:
+      oneOf:
+        - $ref: '#/components/schemas/TextContentPart'
+        - $ref: '#/components/schemas/ImageContentPart'
+
+    TextContentPart:
+      type: object
+      required: [type, text]
+      properties:
+        type:
+          type: string
+          const: text
+        text:
+          type: string
+
+    ImageContentPart:
+      type: object
+      required: [type, image_url]
+      description: |
+        Forwarded unchanged. It works only if the model takes images per its
+        model card and the serving server has vision enabled. Video input is
+        not documented.
+      properties:
+        type:
+          type: string
+          const: image_url
+        image_url:
+          type: object
+          required: [url]
+          properties:
+            url:
+              type: string
+              description: A data URL such as `data:image/png;base64,...`.
+
+    Tool:
+      type: object
+      required: [type, function]
+      properties:
+        type:
+          type: string
+          const: function
+        function:
+          type: object
+          required: [name]
+          properties:
+            name:
+              type: string
+            description:
+              type: string
+            parameters:
+              type: object
+              description: A JSON Schema object describing the arguments.
+
+    ToolChoice:
+      description: Forwarded unchanged.
+      anyOf:
+        - type: string
+          enum: [none, auto, required]
+        - type: object
+          required: [type, function]
+          properties:
+            type:
+              type: string
+              const: function
+            function:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+
+    ToolCall:
+      type: object
+      required: [id, type, function]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: function
+        function:
+          type: object
+          required: [name, arguments]
+          properties:
+            name:
+              type: string
+            arguments:
+              type: string
+              description: |
+                A JSON string. Parse and validate it before use; the model can
+                produce invalid JSON or arguments that do not match the schema.
+
+    # ---------------------------------------------------------------- response
+    ChatCompletion:
+      type: object
+      required: [id, object, created, model, choices, usage]
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          const: chat.completion
+        created:
+          type: integer
+          description: Unix time in seconds.
+        model:
+          type: string
+          description: Always the public id you asked for.
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatCompletionChoice'
+        usage:
+          $ref: '#/components/schemas/Usage'
+
+    ChatCompletionChoice:
+      type: object
+      required: [index, message, finish_reason]
+      properties:
+        index:
+          type: integer
+        message:
+          $ref: '#/components/schemas/AssistantMessage'
+        finish_reason:
+          $ref: '#/components/schemas/FinishReason'
+
+    FinishReason:
+      type: string
+      enum: [stop, length, tool_calls]
+      description: |
+        `length` means the reply hit the plan's output cap; the content then
+        ends with the cap notice.
+
+    AssistantMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          const: assistant
+        content:
+          type: [string, 'null']
+          description: |
+            The answer. Null when the reply only calls tools. On a plain
+            (non-streamed) request, if the serving server leaves reasoning
+            inline, this starts with a `<think>...</think>` block: the gateway
+            strips those only while streaming.
+        reasoning_content:
+          type: string
+          description: Reasoning, for thinking models when the server separates it.
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCall'
+
+    Usage:
+      type: object
+      required: [prompt_tokens, completion_tokens, total_tokens]
+      properties:
+        prompt_tokens:
+          type: integer
+          minimum: 0
+        completion_tokens:
+          type: integer
+          minimum: 0
+        total_tokens:
+          type: integer
+          minimum: 0
+          description: Includes reasoning. This is what counts against the quota.
+
+    # ----------------------------------------------------------------- stream
+    ChatCompletionStreamEvent:
+      description: The JSON payload of one `data:` line (everything except `[DONE]`).
+      oneOf:
+        - $ref: '#/components/schemas/ChatCompletionChunk'
+        - $ref: '#/components/schemas/StreamErrorEvent'
+
+    ChatCompletionChunk:
+      type: object
+      required: [id, object, created, model, choices]
+      properties:
+        id:
+          type: string
+          description: The same for every chunk of one reply.
+        object:
+          type: string
+          const: chat.completion.chunk
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          description: Empty in the final usage chunk.
+          items:
+            $ref: '#/components/schemas/ChatCompletionChunkChoice'
+        usage:
+          $ref: '#/components/schemas/Usage'
+
+    ChatCompletionChunkChoice:
+      type: object
+      required: [index, delta]
+      properties:
+        index:
+          type: integer
+        delta:
+          $ref: '#/components/schemas/ChatCompletionDelta'
+        finish_reason:
+          oneOf:
+            - $ref: '#/components/schemas/FinishReason'
+            - type: 'null'
+
+    ChatCompletionDelta:
+      type: object
+      properties:
+        role:
+          type: string
+          const: assistant
+        content:
+          type: [string, 'null']
+        reasoning_content:
+          type: [string, 'null']
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCallDelta'
+
+    ToolCallDelta:
+      type: object
+      required: [index]
+      description: |
+        A tool call or a fragment of one. Join fragments with the same `index`:
+        `id`, `type` and `function.name` come in the first fragment, and
+        `function.arguments` pieces are concatenated. On this gateway each call
+        arrives whole in one chunk.
+      properties:
+        index:
+          type: integer
+        id:
+          type: string
+        type:
+          type: string
+          const: function
+        function:
+          type: object
+          properties:
+            name:
+              type: string
+            arguments:
+              type: string
+
+    StreamErrorEvent:
+      type: object
+      required: [error]
+      description: |
+        An error after the stream opened. HTTP status stays 200; `data: [DONE]`
+        follows.
+      properties:
+        error:
+          type: object
+          required: [type, message]
+          properties:
+            type:
+              type: string
+              enum: [server_busy, upstream_unreachable, upstream_timeout, upstream_error, preempted]
+            message:
+              type: string
+            elapsed_s:
+              type: number
+            status:
+              type: integer
+              description: '`upstream_error` only: the status the server returned.'
+
+    # ----------------------------------------------------------------- models
+    ModelList:
+      type: object
+      required: [object, data]
+      properties:
+        object:
+          type: string
+          const: list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Model'
+
+    Model:
+      type: object
+      required: [id, object, created, owned_by, name, available]
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          const: model
+        created:
+          type: integer
+          description: Always 0.
+        owned_by:
+          type: string
+          const: molochai
+        name:
+          type: string
+          description: Display name (extension).
+        available:
+          type: boolean
+          description: A server is serving this model right now (extension).
+
+    # ---------------------------------------------------------------- account
+    Account:
+      type: object
+      required:
+        - id
+        - email
+        - plan
+        - plan_expires_at
+        - tier
+        - credit_usd
+        - email_verified
+        - api_base
+        - default_model
+        - context_limit
+        - models
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+        plan:
+          type: [string, 'null']
+          description: The plan key, or null without a plan.
+        plan_expires_at:
+          type: [string, 'null']
+          format: date-time
+        tier:
+          type: [string, 'null']
+          description: The tier actually enforced; `payg` when running on credit with no plan.
+        credit_usd:
+          type: number
+        email_verified:
+          type: boolean
+        api_base:
+          type: string
+          description: The base URL to use for `/v1` requests.
+        default_model:
+          type: [string, 'null']
+        context_limit:
+          type: integer
+          description: Context limit for the default model, in tokens.
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccountModel'
+
+    AccountModel:
+      type: object
+      required: [id, name, available, context_limit]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        available:
+          type: boolean
+        context_limit:
+          type: [integer, 'null']
+          description: |
+            The smaller of the plan's and the serving server's limit; null when
+            no server is serving the model.
+
+    # ----------------------------------------------------------------- errors
+    UnauthenticatedError:
+      type: object
+      required: [message]
+      description: Shape C.
+      properties:
+        message:
+          type: string
+          examples: [Unauthenticated.]
+
+    EmailUnverifiedError:
+      type: object
+      required: [message, code]
+      description: Shape C with a `code`.
+      properties:
+        message:
+          type: string
+        code:
+          type: string
+          const: email_unverified
+
+    RateLimitError:
+      type: object
+      required: [message]
+      description: Shape C. Comes with the `Retry-After` header.
+      properties:
+        message:
+          type: string
+          examples: [Too Many Attempts.]
+
+    ValidationError:
+      type: object
+      required: [message, errors]
+      description: Shape B. `errors` maps each field (such as `messages.0.role`) to its messages.
+      properties:
+        message:
+          type: string
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+
+    GatewayError:
+      type: object
+      required: [error]
+      description: Shape A. Extra fields depend on `type`.
+      properties:
+        error:
+          type: object
+          required: [type, message]
+          additionalProperties: true
+          properties:
+            type:
+              type: string
+            message:
+              type: string
+
+    NoActivePlanError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [type, message]
+          properties:
+            type:
+              type: string
+              const: no_active_plan
+            message:
+              type: string
+            plan:
+              type: [string, 'null']
+
+    ContextLengthExceededError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [type, message, estimated_tokens, context_cap, bound_by]
+          properties:
+            type:
+              type: string
+              const: context_length_exceeded
+            message:
+              type: string
+            estimated_tokens:
+              type: integer
+            context_cap:
+              type: integer
+            bound_by:
+              type: string
+              enum: [plan, server]
+              description: Whether the plan's limit or the serving server's limit applied.
+            plan:
+              type: string
+
+    QuotaExceededError:
+      type: object
+      required: [error]
+      description: |
+        Carries either `monthly_used`/`monthly_cap` or `weekly_used`/`weekly_cap`.
+        A weekly check runs first and its limit equals the monthly quota.
+      properties:
+        error:
+          type: object
+          required: [type, message, resets_at]
+          properties:
+            type:
+              type: string
+              const: quota_exceeded
+            message:
+              type: string
+            resets_at:
+              type: string
+              format: date-time
+            plan:
+              type: string
+            monthly_used:
+              type: integer
+            monthly_cap:
+              type: integer
+            weekly_used:
+              type: integer
+            weekly_cap:
+              type: integer
+
+    SessionQuotaExceededError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [type, message, resets_at]
+          properties:
+            type:
+              type: string
+              const: session_quota_exceeded
+            message:
+              type: string
+            resets_at:
+              type: string
+              format: date-time
+            plan:
+              type: string
+            session_used:
+              type: integer
+            session_cap:
+              type: integer
+
+    ServerBusyError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [type, message]
+          properties:
+            type:
+              type: string
+              const: server_busy
+            message:
+              type: string
+
+    ModelUnavailableError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [type, message, model]
+          properties:
+            type:
+              type: string
+              const: model_unavailable
+            message:
+              type: string
+            model:
+              type: string
+
+    UpstreamFailureError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [type, message]
+          properties:
+            type:
+              type: string
+              enum: [upstream_unreachable, upstream_timeout, upstream_error, no_usage_accounting]
+            message:
+              type: string
+            request_id:
+              type: string
+            elapsed_s:
+              type: number
+            status:
+              type: integer
+              description: '`upstream_error` only: the status the server returned.'
+            body:
+              type: string
+              description: '`upstream_error` only: the start of the server''s response body.'
