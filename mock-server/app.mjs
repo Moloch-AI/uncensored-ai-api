@@ -22,7 +22,14 @@
 import http from 'node:http';
 import { MOCK_CONTEXT_LIMIT, MODELS, modelList } from './catalog.mjs';
 import { handleChatCompletions } from './chat.mjs';
-import { EMAIL_UNVERIFIED, NO_ACTIVE_PLAN, NOT_FOUND, TOO_MANY_ATTEMPTS, UNAUTHENTICATED } from './errors.mjs';
+import {
+  EMAIL_UNVERIFIED,
+  NO_ACTIVE_PLAN,
+  NO_RETRY,
+  NOT_FOUND,
+  TOO_MANY_ATTEMPTS,
+  UNAUTHENTICATED,
+} from './errors.mjs';
 import { SlidingWindowRateLimiter } from './rate-limiter.mjs';
 
 export { MODELS } from './catalog.mjs';
@@ -113,7 +120,7 @@ async function route(ctx) {
       return ctx.json(429, TOO_MANY_ATTEMPTS, { 'Retry-After': String(rate.retryAfter) });
     }
 
-    if (token === TOKENS.noPlan) return ctx.json(402, NO_ACTIVE_PLAN);
+    if (token === TOKENS.noPlan) return ctx.json(402, NO_ACTIVE_PLAN, NO_RETRY);
   }
 
   return entry.handler(ctx);

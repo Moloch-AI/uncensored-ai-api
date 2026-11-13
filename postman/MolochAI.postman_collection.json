@@ -643,6 +643,7 @@
                       "  const error = pm.response.json().error;",
                       "  pm.expect(error.type).to.equal('no_active_plan');",
                       "  pm.expect(error).to.have.property('plan');",
+                      "  pm.expect(pm.response.headers.get('X-Should-Retry')).to.eql('false');",
                       "});"
                     ]
                   }
@@ -776,6 +777,7 @@
                       "  pm.expect(Number.isInteger(error.context_cap), 'context_cap').to.equal(true);",
                       "  pm.expect(error.estimated_tokens).to.be.above(error.context_cap);",
                       "  pm.expect(error.bound_by).to.be.oneOf(['plan', 'server']);",
+                      "  pm.expect(pm.response.headers.get('X-Should-Retry')).to.eql('false');",
                       "});"
                     ]
                   }
@@ -825,6 +827,7 @@
                       "  const body = pm.response.json();",
                       "  pm.expect(body.message).to.be.a('string');",
                       "  pm.expect(body, 'a rate-limit 429 has no error object').to.not.have.property('error');",
+                      "  pm.expect(pm.response.headers.has('X-Should-Retry'), 'a rate-limit 429 has no X-Should-Retry').to.equal(false);",
                       "});"
                     ]
                   }
@@ -875,6 +878,7 @@
                       "  const monthly = 'monthly_used' in error && 'monthly_cap' in error;",
                       "  const weekly = 'weekly_used' in error && 'weekly_cap' in error;",
                       "  pm.expect(monthly || weekly, 'monthly_used/monthly_cap or weekly_used/weekly_cap').to.equal(true);",
+                      "  pm.expect(pm.response.headers.get('X-Should-Retry')).to.eql('false');",
                       "});"
                     ]
                   }
@@ -906,7 +910,7 @@
                   "host": ["{{baseUrl}}"],
                   "path": ["chat", "completions"]
                 },
-                "description": "The plan's quota is used up and there is no account credit. Do not retry: the request fails until `resets_at`. Show that time instead. (The OpenAI SDKs retry this error on their own; turn that off or catch it.)"
+                "description": "The plan's quota is used up and there is no account credit. Do not retry: the request fails until `resets_at`. Show that time instead. The response carries `X-Should-Retry: false`, so the OpenAI SDKs do not retry it; a client that ignores that header (the Vercel AI SDK does) retries it unless you turn its retries off."
               }
             },
             {
@@ -922,6 +926,7 @@
                       "  const error = pm.response.json().error;",
                       "  pm.expect(error.type).to.equal('session_quota_exceeded');",
                       "  pm.expect(Date.parse(error.resets_at), 'resets_at').to.be.above(Date.now());",
+                      "  pm.expect(pm.response.headers.get('X-Should-Retry')).to.eql('false');",
                       "});"
                     ]
                   }

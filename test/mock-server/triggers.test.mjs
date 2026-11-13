@@ -51,12 +51,14 @@ describe('quota and limits', () => {
     assert.equal(res.headers.get('retry-after'), '1');
     assert.equal(res.headers.get('x-ratelimit-limit'), '60');
     assert.equal(res.headers.get('x-ratelimit-remaining'), '0');
+    assert.equal(res.headers.get('x-should-retry'), null, 'the rate limit stays retryable');
   });
 
   test('[mock:quota] is 429 quota_exceeded with resets_at an hour ahead', async () => {
     const { res, json } = await call('[mock:quota]');
     assert.equal(res.status, 429);
     assert.equal(res.headers.get('retry-after'), null, 'quota errors carry no Retry-After');
+    assert.equal(res.headers.get('x-should-retry'), 'false');
     const { error } = json;
     assert.equal(error.type, 'quota_exceeded');
     assert.equal(error.plan, 'pro');
@@ -69,6 +71,7 @@ describe('quota and limits', () => {
     const { res, json } = await call('[mock:session-quota]');
     assert.equal(res.status, 429);
     assert.equal(json.error.type, 'session_quota_exceeded');
+    assert.equal(res.headers.get('x-should-retry'), 'false');
     assertIsoFuture(json.error.resets_at, 0, 5 * 3600_000);
   });
 
@@ -77,6 +80,7 @@ describe('quota and limits', () => {
     assert.equal(res.status, 413);
     const { error } = json;
     assert.equal(error.type, 'context_length_exceeded');
+    assert.equal(res.headers.get('x-should-retry'), 'false');
     assert.equal(error.context_cap, 65536);
     assert.equal(error.bound_by, 'plan');
     assert.equal(error.plan, 'pro');

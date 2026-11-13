@@ -118,7 +118,8 @@ The collection-level test script runs after every request and checks:
 Each request then checks its own status and fields: the tool call's
 `arguments` parse as JSON with the required `city`, the 413 carries
 `estimated_tokens`, `context_cap` and `bound_by`, quota 429s carry a future
-`resets_at`, the rate-limit 429 carries `Retry-After`, and so on.
+`resets_at`, the rate-limit 429 carries `Retry-After` and no `X-Should-Retry`,
+the 402, the 413 and the quota 429s carry `X-Should-Retry: false`, and so on.
 
 What was checked against what:
 

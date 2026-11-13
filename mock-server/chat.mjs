@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { findModel } from './catalog.mjs';
-import { CLOUDFLARE_524_HTML, gatewayError, TOO_MANY_ATTEMPTS, validationError } from './errors.mjs';
+import { CLOUDFLARE_524_HTML, gatewayError, NO_RETRY, TOO_MANY_ATTEMPTS, validationError } from './errors.mjs';
 import { findJsonSchemaBlock, schemaInstance } from './schema-instance.mjs';
 import { isPlainObject, validateChatRequest, wantsStream } from './validation.mjs';
 
@@ -109,6 +109,7 @@ export async function handleChatCompletions(ctx) {
           resets_at: isoIn(2 * 3600_000),
         },
       ),
+      NO_RETRY,
     );
   }
   if (triggers.has('quota')) {
@@ -124,6 +125,7 @@ export async function handleChatCompletions(ctx) {
           resets_at: isoIn(3600_000),
         },
       ),
+      NO_RETRY,
     );
   }
 
@@ -142,6 +144,7 @@ export async function handleChatCompletions(ctx) {
           bound_by: 'plan',
         },
       ),
+      NO_RETRY,
     );
   }
 

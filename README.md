@@ -46,8 +46,10 @@ If you want a library instead, use an SDK:
 OpenAI SDKs also work: set `OPENAI_BASE_URL=https://api.molochai.dev/api/v1` and `OPENAI_API_KEY`.
 They are a fine choice. What they leave to you: they drop SSE comment lines (no queue progress),
 they do not parse the gateway's error bodies into fields such as `resets_at`, `context_cap` or
-`bound_by`, they retry 429 quota errors that cannot pass before `resets_at`, they have no
-`/auth/me`, and they leave in-stream errors and the cap notice to the caller.
+`bound_by`, they have no `/auth/me`, and they leave in-stream errors and the cap notice to the
+caller. They do not retry quota 429s: the API marks those, 402 and 413 with
+`X-Should-Retry: false`, which the OpenAI SDKs check before their own retry rules
+([docs/errors.md](docs/errors.md#x-should-retry)).
 
 ### What "uncensored" means here
 

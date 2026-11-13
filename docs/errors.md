@@ -69,6 +69,9 @@ about an upstream error.
 | Read timeout on a plain request | not by default | the first attempt may still be running (and counting tokens) |
 | Error event inside an open stream | not automatically | part of the reply was already delivered |
 
+The 402, the 413 and the quota 429s also carry the header
+`X-Should-Retry: false` ([below](#x-should-retry)).
+
 ### Backoff
 
 Exponential backoff with full jitter:
@@ -89,13 +92,36 @@ clients cap it at 60 s) so one bad header cannot stall a worker for an hour.
 Every response under `/v1` also carries `X-RateLimit-Limit` and
 `X-RateLimit-Remaining`, so a client can slow down before it hits the limit.
 
+### X-Should-Retry
+
+The gateway sends `X-Should-Retry: false` on refusals that a retry cannot fix:
+
+- 402 `no_active_plan`;
+- 413 `context_length_exceeded`;
+- 429 `quota_exceeded` (weekly and monthly caps) and `session_quota_exceeded`.
+
+It does not send it on the rate-limit 429 (`Too Many Attempts.` with
+`Retry-After`), on 503 `server_busy` or `model_unavailable`, on 502, 504 or
+524, or on 401, 403 or 422. The [mock server](mock-server.md) sends it on the
+same responses.
+
+The header is not a standard one. The official OpenAI SDKs check it before
+their own retry rules and never retry a response that says `false` (verified
+in the source of openai-python 3.50.0 and openai-node 7.56.0). With their
+default settings a quota or session 429 therefore costs one request, not three
+(they do not retry 402 or 413 in any case). Other clients may ignore the
+header (the Vercel AI SDK does), so code of your own should still decide from
+the status and `type`, as in the table above. The reference clients do not
+read the header: their table already gives the same answer.
+
 ### Do not stack retry layers
 
 If your code retries and the HTTP library under it retries too, failures
 multiply: 3 retries at each of two layers is up to 16 attempts. The official
-OpenAI SDKs retry on their own (`max_retries`), and they also retry 429 quota
-errors that cannot pass until `resets_at`. Pick one layer: turn the SDK's
-retries off and keep your own policy, or keep the SDK's and do not wrap it.
+OpenAI SDKs retry on their own (`max_retries`): the rate-limit 429, 5xx and
+connection errors, but not the responses marked `X-Should-Retry: false`. Pick
+one layer: turn the SDK's retries off and keep your own policy, or keep the
+SDK's and do not wrap it.
 
 ## Seeing it on the wire
 

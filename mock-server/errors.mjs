@@ -7,6 +7,10 @@
 // Messages are written for people and can change. Clients must branch on the
 // HTTP status, `error.type`, `code` and the extra fields, never on the text.
 
+// Sent with refusals that cannot succeed on a retry (no plan, quota and session caps, context too
+// large), as the gateway does. The official OpenAI SDKs obey it before their own retry rules.
+export const NO_RETRY = Object.freeze({ 'X-Should-Retry': 'false' });
+
 /** Shape A. */
 export function gatewayError(type, message, extra = {}) {
   return { error: { type, message, ...extra } };

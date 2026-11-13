@@ -88,6 +88,7 @@ describe('auth', () => {
     assert.equal(typeof body.error.message, 'string');
     assert.ok('plan' in body.error);
     assert.equal(models.headers.get('x-ratelimit-limit'), '60');
+    assert.equal(models.headers.get('x-should-retry'), 'false');
 
     const chat = await postChat(mock.baseUrl, userChat('hi'), { token: 'mock-no-plan' });
     assert.equal(chat.status, 402);
