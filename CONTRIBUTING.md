@@ -14,6 +14,8 @@ key).
 | `test/mock-server/` | Mock server tests (`node:test`). |
 | `test/conformance/` | Validates mock responses against `openapi.yaml` (Ajv). |
 | `test/curl/run-examples.sh` | Runs `examples/curl/*.sh` against the mock. |
+| `postman/` | Postman collection (v2.1) with tests, and the real-API and mock environments. |
+| `test/postman/run.mjs` | Checks the Postman files and runs the collection with newman against the mock. |
 | `clients/python/` | Python reference client, demo and tests. |
 | `clients/node/` | Node.js reference client, demo and tests. |
 | `docs/` | Protocol notes (streaming, errors, mock server). |
@@ -37,7 +39,15 @@ npm run test:conformance      # mock responses against openapi.yaml
 npm run test:node-client      # Node reference client (starts the mock as a subprocess)
 python -m pytest              # Python reference client (needs node on PATH for the mock)
 bash test/curl/run-examples.sh  # curl examples against the mock
+npm run test:postman          # Postman collection with newman against the mock
 ```
+
+`npm run test:postman` fetches newman with `npx` (the version is pinned in
+`test/postman/run.mjs`), so it needs network the first time. newman is not a
+devDependency: its dependency tree carries open `npm audit` advisories that
+would otherwise land in this repository's lockfile. Bump the pinned version by
+hand. See [postman/README.md](postman/README.md#changing-the-collection) for
+editing the collection.
 
 The Python tests also run with the standard library alone:
 
@@ -61,7 +71,8 @@ CI also runs `shellcheck` on the bash scripts.
 
 - **The mock and the spec move together.** A new status, field or header in the
   mock needs the matching change in `openapi.yaml`, and the conformance test
-  must pass. It fails if the mock returns something the spec does not document,
+  must pass. A new `[mock:*]` marker or documented behavior should also get a
+  request in the Postman collection. It fails if the mock returns something the spec does not document,
   or if a documented status is never produced.
 - **Document real behavior only.** The mock simulates what the gateway is
   documented to do. Do not add features the API does not have.
@@ -84,5 +95,5 @@ CI also runs `shellcheck` on the bash scripts.
 ## Pull requests
 
 Keep a pull request to one topic, describe the behavior change, and make sure
-`npm test`, `python -m pytest`, the curl checks and the linters pass. Line
-endings are LF (`.gitattributes` enforces it).
+`npm test`, `python -m pytest`, the curl checks, `npm run test:postman` and the
+linters pass. Line endings are LF (`.gitattributes` enforces it).

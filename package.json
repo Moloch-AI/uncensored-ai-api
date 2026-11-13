@@ -35,6 +35,7 @@
     "test:mock": "node --test test/mock-server/*.test.mjs",
     "test:conformance": "node --test test/conformance/*.test.mjs",
     "test:node-client": "node --test clients/node/test/*.test.mjs",
+    "test:postman": "node test/postman/run.mjs",
     "lint": "biome check . && npm run lint:spec",
     "lint:spec": "redocly lint openapi.yaml",
     "format": "biome format --write ."

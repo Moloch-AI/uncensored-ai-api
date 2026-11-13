@@ -21,6 +21,9 @@ what goes over the wire. It is the protocol reference, not a library:
   into your project, not installed.
 - [`mock-server/`](mock-server/) is a zero-dependency Node.js server that simulates the gateway's
   documented behavior, including its failure modes, so clients can be developed and tested offline.
+- [`postman/`](postman/) has a Postman collection whose requests carry tests, with environments for
+  the real API and the mock, and notes on importing `openapi.yaml` into Insomnia, Bruno and
+  Hoppscotch.
 
 ```text
                        openapi.yaml (the contract)
@@ -75,12 +78,18 @@ applies, and an app that faces end users needs its own rules and moderation.
   - an SSE parser that ignores comments but reports queue progress through a callback, raises
     in-stream error events, and handles the usage chunk with empty `choices`.
 - curl scripts for every endpoint, run against the mock in CI.
+- A Postman collection (v2.1) of 30 requests: models, account, plain and streamed chat, both turns
+  of a tool call, image input, the parameters the API ignores, and each error status the mock can
+  produce, including errors inside a stream. Shape-based tests
+  check the three error shapes, rate-limit headers, `usage`, and the stream's usage chunk and
+  `[DONE]`. CI runs it with newman against the mock.
 
 ## Requirements
 
 - Mock server, Node client, spec tooling: Node.js 20 or newer.
 - Python client: Python 3.10 or newer (no packages).
 - curl examples: bash and curl 7.76 or newer (`--fail-with-body`). On Windows, use Git Bash or WSL.
+- Postman collection: Postman, or newman (fetched by `npx`, so Node.js 20 or newer).
 - Calling the real API: an API key from
   [dash.molochai.dev/account](https://dash.molochai.dev/account?utm_source=github&utm_medium=oss&utm_campaign=uncensored-ai-api)
   and an active plan or account credit (there is no free tier; see
@@ -223,6 +232,27 @@ Put a marker in the last user message to make the mock fail the way the real API
 
 All markers, special tokens (`mock-no-plan`, `mock-unverified`) and options are listed in
 [docs/mock-server.md](docs/mock-server.md).
+
+### API clients: Postman, Insomnia, Bruno, Hoppscotch
+
+[`postman/`](postman/) holds a Postman collection and two environments. Import
+`postman/MolochAI.postman_collection.json` with `molochai.postman_environment.json` (put your key in
+the secret `apiKey`) or `mock.postman_environment.json` (for the mock on port 4010). Every request
+has tests that check the documented shapes, so a Collection Runner run tells you whether your key,
+plan and the API behave as documented. The mock-only folder, which triggers each failure with
+`[mock:*]` markers, skips itself unless the mock environment is selected.
+
+Run it from the command line against the mock, as CI does:
+
+```bash
+npm run test:postman
+```
+
+Insomnia, Bruno and Hoppscotch can import [`openapi.yaml`](openapi.yaml) directly. The import works
+in each, but `/api/auth/me` needs its URL fixed by hand: Insomnia and Hoppscotch ignore the spec's
+per-path server and put it under `/api/v1`, and Bruno pins it to the production URL even with the
+mock environment selected. What we checked for each client, and what to fix, is in
+[postman/README.md](postman/README.md#importing-openapiyaml-into-other-clients).
 
 ## Configuration
 

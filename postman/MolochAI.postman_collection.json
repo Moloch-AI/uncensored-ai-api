@@ -1,0 +1,1801 @@
+{
+  "info": {
+    "_postman_id": "c2c49193-3564-42a4-8ed0-36d285e4b06e",
+    "name": "MolochAI API",
+    "description": "Requests and tests for the MolochAI API: the model list, the account, chat completions (plain, streamed, tool calling, image input) and the error responses. The tests check the documented response shapes, never the wording of a reply, so the same collection runs against the real API and against the mock server from https://github.com/Moloch-AI/uncensored-ai-api.\n\n## Setup\n\n1. Import this collection and the two environments from the repository's `postman/` folder.\n2. Real API: select the **MolochAI API** environment and put your API key in `apiKey`, a secret variable. Keys are created at https://dash.molochai.dev/account?utm_source=github&utm_medium=oss&utm_campaign=uncensored-ai-api. Chat requests use your plan's quota.\n3. Mock server: start it with `node mock-server/server.mjs` in a clone of the repository (or `npx github:Moloch-AI/uncensored-ai-api`) and select the **MolochAI mock** environment. No key and no network needed. Its replies are canned text, not model output.\n\nKeep the key in an environment, never in the collection: collections get exported and shared. Keys are not scoped (a key can read account details and create invoices) and do not expire on a timer.\n\n## Variables\n\n| Variable | Set in | Meaning |\n|---|---|---|\n| `baseUrl` | collection, environments | Base URL of the `/v1` requests. Default `https://api.molochai.dev/api/v1`. |\n| `apiKey` | environments | Bearer token for the collection's auth. |\n| `model` | collection | Model id for the chat requests. Default `glm-5.3-flash`. Pick an id with `available: true` from **List models**. |\n| `accountUrl` | derived | `/api/auth/me` lives outside `/api/v1`. The collection's pre-request script derives it from `baseUrl` by replacing the trailing `/v1` with `/auth/me`. Set it yourself only if your base URL does not end in `/v1`. |\n| `isMock` | mock environment | `true` lets the **Mock only** folder run. With any other environment its requests are skipped. |\n\n## Tests\n\nThe collection's test script runs after every request. Error bodies must have the shape documented for their status (A `{\"error\": {...}}`, B `{\"message\", \"errors\"}`, C `{\"message\"}`, or not JSON for a 524). `X-RateLimit-*` and `Retry-After` must be whole numbers. Each `chat.completion` must have choices and usage. Each stream must end with `data: [DONE]`, with a usage chunk (`\"choices\": []`) before it unless an error event ended the stream. Each request then checks its own status and fields.\n\nRun the whole collection with the Collection Runner or with newman. Against the real API, 11 requests run (the mock-only ones are skipped); the API allows 60 requests per minute per account.\n\n## Limits worth knowing\n\n- `max_tokens` is accepted (1 to 65536) but has no effect: the plan's output cap per reply is always used.\n- `stop`, `n`, `seed`, `response_format`, `top_k`, `frequency_penalty`, `presence_penalty`, `logprobs`, `logit_bias`, `user` and `stream_options` are dropped without an error. There is no JSON mode: ask for JSON in the prompt and validate the reply.\n- Reasoning and its effort are fixed per model; no request parameter changes them.\n\nThe models have reduced refusal behavior, not none: they still sometimes decline, and they are not more accurate. The Acceptable Use Policy applies: https://molochai.dev/acceptable-use?utm_source=github&utm_medium=oss&utm_campaign=uncensored-ai-api. Documentation: https://molochai.dev/docs?utm_source=github&utm_medium=oss&utm_campaign=uncensored-ai-api",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Models and account",
+      "description": "Requests that do not run a model and cost no tokens. `GET /models` is behind the plan check (402 without a plan or credit). `GET /api/auth/me` is not behind the email or quota checks, so it still answers when the other requests fail and shows why (`plan`, `tier`, `email_verified`).",
+      "item": [
+        {
+          "name": "List models",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 with a model list', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.object).to.equal('list');",
+                  "  pm.expect(body.data).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('each model has id, object \"model\", owned_by, name and available', () => {",
+                  "  for (const model of pm.response.json().data) {",
+                  "    pm.expect(model.id, 'id').to.be.a('string');",
+                  "    pm.expect(model.object, `${model.id}: object`).to.equal('model');",
+                  "    pm.expect(model.owned_by, `${model.id}: owned_by`).to.be.a('string');",
+                  "    pm.expect(model.name, `${model.id}: name`).to.be.a('string');",
+                  "    pm.expect(model.available, `${model.id}: available`).to.be.a('boolean');",
+                  "  }",
+                  "});",
+                  "pm.test('the \"model\" variable is one of the listed ids', () => {",
+                  "  const ids = pm.response.json().data.map((model) => model.id);",
+                  "  pm.expect(ids, 'set the model variable to one of these ids').to.include(pm.variables.get('model'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/models",
+              "host": ["{{baseUrl}}"],
+              "path": ["models"]
+            },
+            "description": "`GET /models`: the public catalog, and for each model whether a server is serving it right now (`available`). `name` and `available` are MolochAI extensions to the OpenAI format.\n\nUse one of these ids for the `model` variable. The catalog can change and there is no version pinning, so fetch it instead of hardcoding ids. Model details: https://molochai.dev/models?utm_source=github&utm_medium=oss&utm_campaign=uncensored-ai-api"
+          }
+        },
+        {
+          "name": "Get account (/api/auth/me)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 with the account', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json()).to.be.an('object');",
+                  "});",
+                  "pm.test('account fields have the documented types', () => {",
+                  "  const account = pm.response.json();",
+                  "  const stringOrNull = (value) => value === null || typeof value === 'string';",
+                  "  pm.expect(Number.isInteger(account.id), 'id is an integer').to.equal(true);",
+                  "  pm.expect(account.email, 'email').to.be.a('string');",
+                  "  for (const key of ['plan', 'plan_expires_at', 'tier', 'default_model']) {",
+                  "    pm.expect(stringOrNull(account[key]), `${key} is a string or null`).to.equal(true);",
+                  "  }",
+                  "  pm.expect(account.credit_usd, 'credit_usd').to.be.a('number');",
+                  "  pm.expect(account.email_verified, 'email_verified').to.be.a('boolean');",
+                  "  pm.expect(account.api_base, 'api_base').to.be.a('string');",
+                  "  pm.expect(Number.isInteger(account.context_limit), 'context_limit is an integer').to.equal(true);",
+                  "  pm.expect(account.models, 'models').to.be.an('array');",
+                  "});",
+                  "pm.test('each model has a context_limit (null when no server serves it)', () => {",
+                  "  for (const model of pm.response.json().models) {",
+                  "    pm.expect(model.id, 'id').to.be.a('string');",
+                  "    pm.expect(model.name, `${model.id}: name`).to.be.a('string');",
+                  "    pm.expect(model.available, `${model.id}: available`).to.be.a('boolean');",
+                  "    const limit = model.context_limit;",
+                  "    pm.expect(limit === null || Number.isInteger(limit), `${model.id}: context_limit`).to.equal(true);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{accountUrl}}",
+              "host": ["{{accountUrl}}"]
+            },
+            "description": "`GET /api/auth/me`: the account behind the key. `plan`, `tier` (`payg` when running on credit with no plan), `credit_usd`, `email_verified`, and for each model a `context_limit`: the smaller of the plan's limit and the serving server's limit, or null when nothing serves the model.\n\nThe path is outside `/api/v1`, so the URL is `{{accountUrl}}`. The collection's pre-request script derives it from `baseUrl` by replacing the trailing `/v1` with `/auth/me`: `https://api.molochai.dev/api/v1` becomes `https://api.molochai.dev/api/auth/me`. If your base URL does not end in `/v1`, set `accountUrl` yourself."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Chat completions",
+      "description": "`POST /chat/completions`. On the real API these requests run a model and count against your plan's quota.\n\nParameters that reach the model: `model`, `messages`, `stream`, `temperature` (0 to 2), `top_p` (0 to 1), `tools` and `tool_choice`. `max_tokens` is accepted but has no effect, and other OpenAI parameters are dropped (see **Ignored parameters**). Reasoning and its effort are fixed per model.\n\nThe gateway puts a short identity system message first. If your first message is a system message, the identity text goes above yours in the same message and yours is kept.\n\nPrefer streaming for long replies: Cloudflare in front of the API gives up on a plain request after about 100 seconds (524).",
+      "item": [
+        {
+          "name": "Chat completion",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 with a chat.completion for the model you asked for', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.object).to.equal('chat.completion');",
+                  "  pm.expect(body.model, 'model is always the public id you sent').to.equal(pm.variables.get('model'));",
+                  "});",
+                  "pm.test('the answer is text, with finish_reason stop or length', () => {",
+                  "  const choice = pm.response.json().choices[0];",
+                  "  pm.expect(choice.message.content).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(choice.finish_reason).to.be.oneOf(['stop', 'length']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Answer in one or two sentences.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What are server-sent events?\"\n    }\n  ],\n  \"temperature\": 0.7\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chat/completions",
+              "host": ["{{baseUrl}}"],
+              "path": ["chat", "completions"]
+            },
+            "description": "A plain request: one JSON `chat.completion` comes back when the reply is complete. Thinking models also return `message.reasoning_content`. If the serving server leaves reasoning inline, `content` starts with a `<think>...</think>` block on a plain request: the gateway strips those only while streaming.\n\n`model` in the reply is always the id you sent. `usage.total_tokens` includes reasoning and is what counts against the quota."
+          }
+        },
+        {
+          "name": "Chat completion, streamed",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const sse = JSON.parse(pm.variables.get('sse') || 'null');",
+                  "pm.test('200 with Content-Type text/event-stream', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.match(/^text\\/event-stream/);",
+                  "});",
+                  "pm.test('no error event; the answer arrived as delta.content', () => {",
+                  "  pm.expect(sse, 'parsed stream').to.be.an('object');",
+                  "  pm.expect(sse.error, sse.error ? `error event: ${sse.error.type}` : '').to.equal(null);",
+                  "  pm.expect(sse.content).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(sse.finishReason).to.be.oneOf(['stop', 'length']);",
+                  "});",
+                  "pm.test('usage chunk counts the reply', () => {",
+                  "  pm.expect(sse.usage.completion_tokens, 'completion_tokens').to.be.above(0);",
+                  "  pm.expect(sse.usage.total_tokens, 'total_tokens').to.be.at.least(sse.usage.prompt_tokens);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{model}}\",\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Name three HTTP status codes worth retrying.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chat/completions",
+              "host": ["{{baseUrl}}"],
+              "path": ["chat", "completions"]
+            },
+            "description": "The same endpoint with `\"stream\": true`. The reply arrives as server-sent events (`Content-Type: text/event-stream`), in this order: a chunk with `delta.role`, `delta.reasoning_content` chunks (thinking models), `delta.content` chunks, a chunk with `finish_reason`, a usage chunk whose `choices` is empty, then `data: [DONE]`. Lines starting with `:` are comments, such as the `: ka` keep-alive or `: queued · position 2 of 3 · waiting 4s` while the request waits for a slot. Usage is always sent.\n\nWhat Postman shows: the desktop app recognizes `text/event-stream` and lists the events in the response pane as they arrive, instead of one JSON body.\n\nThe tests run after the stream has ended. The collection's test script reads the raw stream with `pm.response.text()` and parses it the way a client has to: skip comment lines, stop at `[DONE]`, check each payload for an `error` key, and check for an empty `choices` before indexing it. newman and the CI of this repository run them that way."
+          }
+        },
+        {
+          "name": "Tool calling 1: the model calls a tool",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 and the model called a tool (finish_reason \"tool_calls\")', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  const choice = pm.response.json().choices[0];",
+                  "  pm.expect(choice.finish_reason, 'the model answered in text instead; it decides whether to call a tool').to.equal(",
+                  "    'tool_calls',",
+                  "  );",
+                  "});",
+                  "pm.test('each call has an id, type \"function\", the declared name and JSON arguments', () => {",
+                  "  const calls = pm.response.json().choices[0].message.tool_calls;",
+                  "  pm.expect(calls, 'message.tool_calls').to.be.an('array').that.is.not.empty;",
+                  "  for (const call of calls) {",
+                  "    pm.expect(call.id, 'id').to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(call.type, 'type').to.equal('function');",
+                  "    pm.expect(call.function.name, 'function.name').to.equal('get_weather');",
+                  "    // arguments is a JSON string. Parse it, then validate it against the tool's schema:",
+                  "    // a model can produce invalid JSON or leave out a required field.",
+                  "    pm.expect(call.function.arguments, 'function.arguments').to.be.a('string');",
+                  "    const args = JSON.parse(call.function.arguments);",
+                  "    pm.expect(args, 'parsed arguments').to.be.an('object');",
+                  "    pm.expect(args.city, 'required argument \"city\"').to.be.a('string');",
+                  "  }",
+                  "});",
+                  "// Keep the assistant message exactly as received (tool_calls, and reasoning_content",
+                  "// when present) for \"Tool calling 2\", which sends it back with the tool result.",
+                  "const message = pm.response.code === 200 ? pm.response.json().choices[0].message : null;",
+                  "if (message && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {",
+                  "  pm.collectionVariables.set('toolTurnAssistant', JSON.stringify(message));",
+                  "  pm.collectionVariables.set('toolCallId', message.tool_calls[0].id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Oslo right now?\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\",\n              \"description\": \"City name, for example Oslo.\"\n            },\n            \"unit\": {\n              \"type\": \"string\",\n              \"enum\": [\n                \"celsius\",\n                \"fahrenheit\"\n              ]\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"auto\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chat/completions",
+              "host": ["{{baseUrl}}"],
+              "path": ["chat", "completions"]
+            },
+            "description": "Offers one tool in the OpenAI format. When the model calls it, the reply has `finish_reason: \"tool_calls\"`, `content: null` and `message.tool_calls`. `function.arguments` is a JSON string: parse it, then validate it against your schema, because a model can produce invalid JSON or leave out a required field.\n\nThe model decides whether to call the tool, and `tool_choice` is passed to the serving server unchanged. If the model answers in text instead, the first test fails and says so.\n\nIn a stream, a tool call arrives whole in one chunk on this API. Other OpenAI-compatible providers send it in fragments, so join fragments by `index` anyway.\n\nThe test script keeps the assistant message for **Tool calling 2**."
+          }
+        },
+        {
+          "name": "Tool calling 2: send the tool result",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// This request sends back the assistant message from \"Tool calling 1\" exactly as",
+                  "// received, then a role \"tool\" message whose tool_call_id answers the call.",
+                  "// If \"Tool calling 1\" has not run, an example assistant message stands in for it.",
+                  "if (!pm.collectionVariables.get('toolTurnAssistant')) {",
+                  "  const example = {",
+                  "    role: 'assistant',",
+                  "    content: null,",
+                  "    tool_calls: [",
+                  "      {",
+                  "        id: 'call_example_1',",
+                  "        type: 'function',",
+                  "        function: { name: 'get_weather', arguments: '{\"city\":\"Oslo\"}' },",
+                  "      },",
+                  "    ],",
+                  "  };",
+                  "  pm.variables.set('toolTurnAssistant', JSON.stringify(example));",
+                  "  pm.variables.set('toolCallId', 'call_example_1');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 and a text answer (finish_reason stop or length)', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  const choice = pm.response.json().choices[0];",
+                  "  pm.expect(choice.finish_reason).to.be.oneOf(['stop', 'length']);",
+                  "  pm.expect(choice.message.content).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Oslo right now?\"\n    },\n    {{toolTurnAssistant}},\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"{{toolCallId}}\",\n      \"content\": \"{\\\"city\\\":\\\"Oslo\\\",\\\"temperature_c\\\":4,\\\"conditions\\\":\\\"light rain\\\"}\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\",\n              \"description\": \"City name, for example Oslo.\"\n            },\n            \"unit\": {\n              \"type\": \"string\",\n              \"enum\": [\n                \"celsius\",\n                \"fahrenheit\"\n              ]\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chat/completions",
+              "host": ["{{baseUrl}}"],
+              "path": ["chat", "completions"]
+            },
+            "description": "Continues the conversation with three messages: the user's question, the assistant message from **Tool calling 1** exactly as it came back, and a `role: \"tool\"` message whose `tool_call_id` answers the call. Sending the assistant message back unchanged includes its `reasoning_content`, so a thinking model keeps its reasoning across turns.\n\n`{{toolTurnAssistant}}` stands in the body without quotes because it holds a whole JSON object. The tool result here is made up; in your code it is what your function returned.\n\nIf you send this request without running **Tool calling 1** first, its pre-request script uses an example assistant message instead."
+          }
+        },
+        {
+          "name": "Image input (content part)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 with a text answer', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  const choice = pm.response.json().choices[0];",
+                  "  pm.expect(choice.message.content).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What color is the square in this image? Answer with one word.\"\n        },\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAWElEQVR42u3ZQQ0AMAgEQZTgXxReWhUl0MxlDcz74ixfAAAAAAAAAAAAAAC0ASrzaQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8wAeGgAAAAAAAAAAAIBvABeLjT5ZV50bxgAAAABJRU5ErkJggg==\"\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chat/completions",
+              "host": ["{{baseUrl}}"],
+              "path": ["chat", "completions"]
+            },
+            "description": "A user message whose `content` is an array of parts: a text part and an `image_url` part holding a base64 data URL (a 64x64 PNG: a red square on white).\n\nThe gateway forwards image parts unchanged. They work only when the model takes images according to its model card AND the server serving it has vision enabled. Per their cards (checked on 2026-11-07), `glm-5.3-flash`, `gemma4-26b-a4b-qat` and `qwen3.8-27b-uncensored` take images; the others take text only. When either condition is missing, expect an error or a reply that did not see the image. Video input is not documented.\n\nThe mock does not look at images: it answers from the text parts."
+          }
+        },
+        {
+          "name": "Ignored parameters",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200: the dropped parameters cause no error', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().object).to.equal('chat.completion');",
+                  "});",
+                  "pm.test('one choice: n is dropped', () => {",
+                  "  pm.expect(pm.response.json().choices).to.have.lengthOf(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Name two prime numbers.\"\n    }\n  ],\n  \"max_tokens\": 5,\n  \"n\": 3,\n  \"stop\": [\n    \"\\n\"\n  ],\n  \"seed\": 42,\n  \"response_format\": {\n    \"type\": \"json_object\"\n  },\n  \"frequency_penalty\": 0.5,\n  \"presence_penalty\": 0.5,\n  \"user\": \"postman-example\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chat/completions",
+              "host": ["{{baseUrl}}"],
+              "path": ["chat", "completions"]
+            },
+            "description": "Parameters the API accepts without applying them. None of them causes an error:\n\n- `max_tokens` is accepted (1 to 65536) but has no effect: the plan's output cap per reply is always used (https://molochai.dev/pricing?utm_source=github&utm_medium=oss&utm_campaign=uncensored-ai-api). A reply that hits the cap ends with `finish_reason: \"length\"` and the notice `[Response is too large for your current plan. Try a smaller request.]`.\n- `n`, `stop`, `seed`, `response_format`, `frequency_penalty`, `presence_penalty` and `user` are dropped, as are `top_k`, `logprobs`, `logit_bias` and `stream_options`. So there is one choice, no stop sequence and no seed.\n- There is no JSON mode: `response_format` does nothing. Ask for JSON in the prompt and validate what comes back."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Errors and edge cases",
+      "description": "How failures look on the wire. Check the HTTP status first, then the body, which comes in three shapes:\n\n- A, gateway: `{\"error\": {\"type\": \"...\", \"message\": \"...\", ...}}` for 402, 413, 429 quota, 502, 503, 504, and errors inside a stream;\n- B, validation: `{\"message\": \"...\", \"errors\": {\"field\": [\"...\"]}}` for 422;\n- C, bare message: `{\"message\": \"...\"}` for 401, the rate-limit 429, and 403 (with `\"code\": \"email_unverified\"`).\n\nSome bodies are not JSON at all: Cloudflare's 524 page is HTML. Messages are written for people and can change, so branch on the status, `type`, `code`, `resets_at` and the headers.\n\nRetry 502, 503 `server_busy`, 504, 524 and connection errors with exponential backoff and jitter. On the rate-limit 429, wait `Retry-After`. Never retry quota 429s before `resets_at`, and never retry 401, 402, 403, 413 or 422. The full tables: https://github.com/Moloch-AI/uncensored-ai-api/blob/main/docs/errors.md",
+      "item": [
+        {
+          "name": "Any server (no tokens used)",
+          "description": "No model runs for these, so they cost no tokens on the real API either: the key is checked first, then the request is validated.",
+          "item": [
+            {
+              "name": "401 Unauthenticated (no key)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('401 with shape C: {\"message\": \"...\"}', () => {",
+                      "  pm.response.to.have.status(401);",
+                      "  const body = pm.response.json();",
+                      "  pm.expect(body.message).to.be.a('string');",
+                      "  pm.expect(body).to.not.have.property('error');",
+                      "  pm.expect(body).to.not.have.property('errors');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "auth": {
+                  "type": "noauth"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/models",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["models"]
+                },
+                "description": "Sent without an `Authorization` header (this request's auth is No Auth). A missing, mistyped or revoked key gets this 401 with `{\"message\": \"Unauthenticated.\"}`. Do not retry; fix the key. The header is `Authorization: Bearer <key>`."
+              }
+            },
+            {
+              "name": "422 Unknown model",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('422 with shape B: errors.model lists the problem', () => {",
+                      "  pm.response.to.have.status(422);",
+                      "  const body = pm.response.json();",
+                      "  pm.expect(body.message).to.be.a('string');",
+                      "  pm.expect(body.errors.model).to.be.an('array').that.is.not.empty;",
+                      "  pm.expect(body.errors.model[0]).to.be.a('string');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"no-such-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "An id that is not in the catalog: 422, with the field in `errors`. A known id that no server is serving right now is a different error: 503 `model_unavailable`."
+              }
+            },
+            {
+              "name": "422 Parameter out of range",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('422 with shape B: errors.temperature lists the problem', () => {",
+                      "  pm.response.to.have.status(422);",
+                      "  const body = pm.response.json();",
+                      "  pm.expect(body.message).to.be.a('string');",
+                      "  pm.expect(body.errors.temperature).to.be.an('array').that.is.not.empty;",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"temperature\": 3\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "`temperature` must be between 0 and 2 (`top_p` between 0 and 1). Do not retry a 422; fix the request."
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mock only ([mock:*] markers and special keys)",
+          "description": "Needs the mock server (`node mock-server/server.mjs` in a clone of https://github.com/Moloch-AI/uncensored-ai-api) and the **MolochAI mock** environment. Each request puts a `[mock:*]` marker in the last user message, or uses one of the mock's special keys, so that the mock answers the way the real API does when something goes wrong.\n\nTo the real API the markers are plain text: the request would reach a model and use your quota. So this folder's pre-request script skips every request in it unless `isMock` is `true`, which only the mock environment sets.\n\nAll markers and keys: https://github.com/Moloch-AI/uncensored-ai-api/blob/main/docs/mock-server.md",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Every request in this folder needs the mock server. To the real API the",
+                  "// [mock:*] markers are plain prompt text (the request would reach a model and",
+                  "// use your quota), and the keys mock-no-plan and mock-unverified do not exist.",
+                  "// The mock environment sets isMock to true; with any other environment these",
+                  "// requests are skipped.",
+                  "if (String(pm.variables.get('isMock')) !== 'true') {",
+                  "  console.log(`Skipped \"${pm.info.requestName}\": mock only. Select the MolochAI mock environment to run it.`);",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "item": [
+            {
+              "name": "402 no_active_plan (key mock-no-plan)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('402 no_active_plan (shape A) with a plan field', () => {",
+                      "  pm.response.to.have.status(402);",
+                      "  const error = pm.response.json().error;",
+                      "  pm.expect(error.type).to.equal('no_active_plan');",
+                      "  pm.expect(error).to.have.property('plan');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "mock-no-plan",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/models",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["models"]
+                },
+                "description": "Key `mock-no-plan`: a valid key on an account with no active plan and no credit. A new key will not help; a plan or account credit will."
+              }
+            },
+            {
+              "name": "403 email_unverified (key mock-unverified)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('403 with shape C and code \"email_unverified\"', () => {",
+                      "  pm.response.to.have.status(403);",
+                      "  const body = pm.response.json();",
+                      "  pm.expect(body.code).to.equal('email_unverified');",
+                      "  pm.expect(body.message).to.be.a('string');",
+                      "  pm.expect(body).to.not.have.property('error');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "mock-unverified",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/models",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["models"]
+                },
+                "description": "Key `mock-unverified`: the account has not confirmed its email. The body is shape C with a `code`."
+              }
+            },
+            {
+              "name": "200 /api/auth/me with an unverified email",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('200: /api/auth/me is not behind the email check', () => {",
+                      "  pm.response.to.have.status(200);",
+                      "  pm.expect(pm.response.json().email_verified).to.equal(false);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "mock-unverified",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "url": {
+                  "raw": "{{accountUrl}}",
+                  "host": ["{{accountUrl}}"]
+                },
+                "description": "`GET /api/auth/me` is not behind the email check, so an unverified account can still read its state there: `email_verified: false`."
+              }
+            },
+            {
+              "name": "413 context_length_exceeded",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('413 context_length_exceeded with the numbers to trim by', () => {",
+                      "  pm.response.to.have.status(413);",
+                      "  const error = pm.response.json().error;",
+                      "  pm.expect(error.type).to.equal('context_length_exceeded');",
+                      "  pm.expect(Number.isInteger(error.estimated_tokens), 'estimated_tokens').to.equal(true);",
+                      "  pm.expect(Number.isInteger(error.context_cap), 'context_cap').to.equal(true);",
+                      "  pm.expect(error.estimated_tokens).to.be.above(error.context_cap);",
+                      "  pm.expect(error.bound_by).to.be.oneOf(['plan', 'server']);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Summarize this long document. [mock:context]\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "The prompt does not fit the context window. `context_cap` is the limit, set by the plan or by the serving server (`bound_by`), and `estimated_tokens` is the prompt's size. The gateway does not trim the conversation for you: trim it, then send again."
+              }
+            },
+            {
+              "name": "429 Too Many Attempts (rate limit)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('429 with shape C and a Retry-After header in seconds', () => {",
+                      "  pm.response.to.have.status(429);",
+                      "  pm.response.to.have.header('Retry-After');",
+                      "  pm.expect(pm.response.headers.get('Retry-After')).to.match(/^\\d+$/);",
+                      "  const body = pm.response.json();",
+                      "  pm.expect(body.message).to.be.a('string');",
+                      "  pm.expect(body, 'a rate-limit 429 has no error object').to.not.have.property('error');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello [mock:rate-limit]\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "More than 60 requests in a minute. Wait `Retry-After` seconds (cap the wait), then retry. `X-RateLimit-Remaining` on earlier responses lets a client slow down before it gets here."
+              }
+            },
+            {
+              "name": "429 quota_exceeded",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('429 quota_exceeded with resets_at in the future (do not retry before then)', () => {",
+                      "  pm.response.to.have.status(429);",
+                      "  const error = pm.response.json().error;",
+                      "  pm.expect(error.type).to.equal('quota_exceeded');",
+                      "  pm.expect(Date.parse(error.resets_at), 'resets_at').to.be.above(Date.now());",
+                      "  const monthly = 'monthly_used' in error && 'monthly_cap' in error;",
+                      "  const weekly = 'weekly_used' in error && 'weekly_cap' in error;",
+                      "  pm.expect(monthly || weekly, 'monthly_used/monthly_cap or weekly_used/weekly_cap').to.equal(true);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello [mock:quota]\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "The plan's quota is used up and there is no account credit. Do not retry: the request fails until `resets_at`. Show that time instead. (The OpenAI SDKs retry this error on their own; turn that off or catch it.)"
+              }
+            },
+            {
+              "name": "429 session_quota_exceeded",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('429 session_quota_exceeded with resets_at in the future', () => {",
+                      "  pm.response.to.have.status(429);",
+                      "  const error = pm.response.json().error;",
+                      "  pm.expect(error.type).to.equal('session_quota_exceeded');",
+                      "  pm.expect(Date.parse(error.resets_at), 'resets_at').to.be.above(Date.now());",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello [mock:session-quota]\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "The 5-hour session cap, a fixed window from the session's first request. It clears at `resets_at`."
+              }
+            },
+            {
+              "name": "502 upstream_error",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('502 upstream_error with the server status and a request_id', () => {",
+                      "  pm.response.to.have.status(502);",
+                      "  const error = pm.response.json().error;",
+                      "  pm.expect(error.type).to.equal('upstream_error');",
+                      "  pm.expect(Number.isInteger(error.status), 'status').to.equal(true);",
+                      "  pm.expect(error.request_id, 'request_id (quote it to support)').to.be.a('string');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello [mock:upstream-error]\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "The inference server returned an error. `status` is its HTTP status, `body` the start of its reply, and `request_id` identifies the request if you contact support. Retry 5xx with backoff."
+              }
+            },
+            {
+              "name": "502 then 200: a retry succeeds (1 of 2)",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// The mock counts requests per request body, so a fresh nonce makes this pair",
+                      "// independent of earlier runs. The second request sends the same body.",
+                      "pm.collectionVariables.set('flakyNonce', String(Date.now()));"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('502 upstream_unreachable: worth a retry with backoff', () => {",
+                      "  pm.response.to.have.status(502);",
+                      "  pm.expect(pm.response.json().error.type).to.equal('upstream_unreachable');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Retry me {{flakyNonce}} [mock:flaky=1]\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "`[mock:flaky=1]` fails the first request with this exact body with 502 `upstream_unreachable`, the way a passing upstream problem looks. The pre-request script sets a fresh `flakyNonce`, so the pair works on every run."
+              }
+            },
+            {
+              "name": "502 then 200: a retry succeeds (2 of 2)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('200 on the retry with the same body', () => {",
+                      "  pm.response.to.have.status(200);",
+                      "  pm.expect(pm.response.json().object).to.equal('chat.completion');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Retry me {{flakyNonce}} [mock:flaky=1]\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "The same body again, and this time it succeeds. This is the case that retrying with exponential backoff and jitter is for."
+              }
+            },
+            {
+              "name": "503 server_busy",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('503 server_busy: worth a retry with backoff', () => {",
+                      "  pm.response.to.have.status(503);",
+                      "  pm.expect(pm.response.json().error.type).to.equal('server_busy');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello [mock:busy]\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "No slot is free. Retry with backoff."
+              }
+            },
+            {
+              "name": "503 model_unavailable",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('503 model_unavailable names the model (it is never rerouted)', () => {",
+                      "  pm.response.to.have.status(503);",
+                      "  const error = pm.response.json().error;",
+                      "  pm.expect(error.type).to.equal('model_unavailable');",
+                      "  pm.expect(error.model).to.equal(pm.variables.get('model'));",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello [mock:unavailable]\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "No server is serving this model right now. The request is never rerouted to another model. Try a few times at most, then pick a model with `available: true` from **List models**."
+              }
+            },
+            {
+              "name": "504 upstream_timeout",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('504 upstream_timeout: retry with backoff, or stream instead', () => {",
+                      "  pm.response.to.have.status(504);",
+                      "  pm.expect(pm.response.json().error.type).to.equal('upstream_timeout');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello [mock:timeout]\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "The upstream time limit on a plain request. Retry with backoff, and stream long replies."
+              }
+            },
+            {
+              "name": "524 Cloudflare timeout (HTML)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('524 with an HTML body: never assume JSON', () => {",
+                      "  pm.response.to.have.status(524);",
+                      "  pm.expect(pm.response.headers.get('Content-Type')).to.match(/^text\\/html/);",
+                      "  pm.expect(() => JSON.parse(pm.response.text())).to.throw();",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello [mock:cloudflare-524]\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "Cloudflare gave up after about 100 seconds on a plain request. The body is an HTML page, not JSON, and the gateway's headers are missing. Retry with backoff, and stream long replies."
+              }
+            },
+            {
+              "name": "Stream: upstream_timeout after some content",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const sse = JSON.parse(pm.variables.get('sse') || 'null');",
+                      "pm.test('200, some content, then an upstream_timeout error event', () => {",
+                      "  pm.response.to.have.status(200);",
+                      "  pm.expect(sse, 'parsed stream').to.be.an('object');",
+                      "  pm.expect(sse.content, 'content before the error').to.not.be.empty;",
+                      "  pm.expect(sse.error.type).to.equal('upstream_timeout');",
+                      "  pm.expect(sse.error.elapsed_s, 'elapsed_s').to.be.a('number');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "text/event-stream"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"One two three four [mock:timeout]\"\n    }\n  ],\n  \"stream\": true\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "An error after the stream opened cannot change the status, which stays 200. It arrives as a data event `{\"error\": {\"type\": \"...\", \"message\": \"...\"}}`, then `data: [DONE]`, with no finish or usage chunk. Part of the reply was already delivered and counted, so do not retry automatically; let the caller decide."
+              }
+            },
+            {
+              "name": "Stream: preempted",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const sse = JSON.parse(pm.variables.get('sse') || 'null');",
+                      "pm.test('200, some content, then a preempted error event (retry in a minute)', () => {",
+                      "  pm.response.to.have.status(200);",
+                      "  pm.expect(sse, 'parsed stream').to.be.an('object');",
+                      "  pm.expect(sse.content, 'content before the error').to.not.be.empty;",
+                      "  pm.expect(sse.error.type).to.equal('preempted');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "text/event-stream"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"One two three four [mock:preempted]\"\n    }\n  ],\n  \"stream\": true\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "`preempted`: the server running the reply was reclaimed mid-reply. Retry in a minute."
+              }
+            },
+            {
+              "name": "Stream: queue position comments",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const sse = JSON.parse(pm.variables.get('sse') || 'null');",
+                      "pm.test('queue position comments arrive before the reply', () => {",
+                      "  pm.response.to.have.status(200);",
+                      "  pm.expect(sse, 'parsed stream').to.be.an('object');",
+                      "  const queued = sse.comments.filter((comment) => comment.startsWith('queued'));",
+                      "  pm.expect(queued, 'comments starting with \"queued\"').to.not.be.empty;",
+                      "  pm.expect(queued[0]).to.match(/position \\d+ of \\d+/);",
+                      "  pm.expect(sse.content, 'the reply still arrives').to.not.be.empty;",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "text/event-stream"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello [mock:queue]\"\n    }\n  ],\n  \"stream\": true\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "While the request waits for a slot, the stream carries comment lines such as `: queued · position 2 of 3 · waiting 1s` before any data. Show them as progress if you like, but the format is not a contract: treat every comment line generically. The OpenAI SDKs drop comment lines."
+              }
+            },
+            {
+              "name": "Cap notice (finish_reason length)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('finish_reason \"length\" and the cap notice at the end of the content', () => {",
+                      "  pm.response.to.have.status(200);",
+                      "  const choice = pm.response.json().choices[0];",
+                      "  pm.expect(choice.finish_reason).to.equal('length');",
+                      "  pm.expect(",
+                      "    choice.message.content.endsWith('\\n\\n[Response is too large for your current plan. Try a smaller request.]'),",
+                      "    'content ends with the cap notice',",
+                      "  ).to.equal(true);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Write a very long story. [mock:cap]\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "A reply that stops at the plan's output cap has `finish_reason: \"length\"`, and the gateway appends `\\n\\n[Response is too large for your current plan. Try a smaller request.]` to the content. `max_tokens` does not move the cap. If you show replies to people, render the notice as a notice, not as model text."
+              }
+            },
+            {
+              "name": "Inline <think> in a plain reply",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('content starts with a <think> block and there is no reasoning_content', () => {",
+                      "  pm.response.to.have.status(200);",
+                      "  const message = pm.response.json().choices[0].message;",
+                      "  pm.expect(message.content.startsWith('<think>'), 'content starts with <think>').to.equal(true);",
+                      "  pm.expect(message).to.not.have.property('reasoning_content');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello [mock:inline-think]\"\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/chat/completions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["chat", "completions"]
+                },
+                "description": "If the serving server leaves reasoning inline, a plain reply's `content` starts with `<think>...</think>` and there is no `reasoning_content`. The gateway strips those blocks only while streaming, so strip them yourself or stream."
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{apiKey}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// /api/auth/me lives outside /api/v1. Unless accountUrl is set, derive it from",
+          "// baseUrl by replacing the trailing /v1 with /auth/me:",
+          "//   https://api.molochai.dev/api/v1  ->  https://api.molochai.dev/api/auth/me",
+          "if (!pm.variables.get('accountUrl')) {",
+          "  const base = String(pm.variables.get('baseUrl') || '').replace(/\\/+$/, '');",
+          "  if (base.endsWith('/v1')) {",
+          "    pm.variables.set('accountUrl', `${base.slice(0, -'/v1'.length)}/auth/me`);",
+          "  }",
+          "}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Checks that hold for every response, from the real API or the mock. They run",
+          "// after each request; the request's own tests then check what is specific to it.",
+          "const status = pm.response.code;",
+          "const mediaType = (pm.response.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();",
+          "const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);",
+          "const isCount = (value) => Number.isInteger(value) && value >= 0;",
+          "",
+          "// X-RateLimit-Limit and X-RateLimit-Remaining come with /v1 responses after the",
+          "// rate limiter, Retry-After with the rate-limit 429. All are whole numbers.",
+          "const numeric = ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'Retry-After'].filter((name) =>",
+          "  pm.response.headers.has(name),",
+          ");",
+          "if (numeric.length > 0) {",
+          "  pm.test(`${numeric.join(', ')}: whole numbers`, () => {",
+          "    numeric.forEach((name) => pm.expect(pm.response.headers.get(name), name).to.match(/^\\d+$/));",
+          "  });",
+          "}",
+          "",
+          "// Errors: read the status first, then the body. Three JSON shapes, and some",
+          "// bodies are not JSON at all (Cloudflare's 524 page is HTML).",
+          "//   A  {\"error\": {\"type\": \"...\", \"message\": \"...\", ...}}  402, 413, 429 quota, 502, 503, 504",
+          "//   B  {\"message\": \"...\", \"errors\": {\"field\": [\"...\"]}}    422",
+          "//   C  {\"message\": \"...\"}                                  401, 403 (adds \"code\"), 429 rate limit",
+          "if (status >= 400) {",
+          "  let body;",
+          "  try {",
+          "    body = JSON.parse(pm.response.text());",
+          "  } catch (_err) {",
+          "    body = undefined;",
+          "  }",
+          "  let shape = 'not JSON';",
+          "  if (isObject(body)) {",
+          "    if (isObject(body.error)) shape = 'A';",
+          "    else if (isObject(body.errors)) shape = 'B';",
+          "    else if (typeof body.message === 'string') shape = 'C';",
+          "    else shape = 'unknown JSON';",
+          "  }",
+          "  const documented = {",
+          "    401: ['C'],",
+          "    402: ['A'],",
+          "    403: ['C'],",
+          "    413: ['A'],",
+          "    422: ['B'],",
+          "    429: ['A', 'C'],",
+          "    // A from the gateway; a proxy in front of it can answer with an HTML page.",
+          "    502: ['A', 'not JSON'],",
+          "    503: ['A', 'not JSON'],",
+          "    504: ['A', 'not JSON'],",
+          "    524: ['not JSON'],",
+          "  }[status] || ['A', 'B', 'C', 'not JSON'];",
+          "  pm.test(`${status}: error body has a documented shape (${documented.join(' or ')})`, () => {",
+          "    pm.expect(documented, `the body has shape: ${shape}`).to.include(shape);",
+          "    if (shape === 'A') {",
+          "      pm.expect(body.error.type, 'error.type').to.be.a('string');",
+          "      pm.expect(body.error.message, 'error.message').to.be.a('string');",
+          "    } else if (shape === 'B') {",
+          "      pm.expect(body.message, 'message').to.be.a('string');",
+          "      Object.entries(body.errors).forEach(([field, messages]) => {",
+          "        pm.expect(messages, `errors.${field}`).to.be.an('array').that.is.not.empty;",
+          "      });",
+          "    }",
+          "  });",
+          "}",
+          "",
+          "// Every chat.completion: id, created, model, choices with assistant messages, usage.",
+          "let json;",
+          "if (mediaType === 'application/json') {",
+          "  try {",
+          "    json = pm.response.json();",
+          "  } catch (_err) {",
+          "    json = undefined;",
+          "  }",
+          "}",
+          "if (status === 200 && isObject(json) && json.object === 'chat.completion') {",
+          "  pm.test('chat.completion: id, created, model and choices', () => {",
+          "    pm.expect(json.id, 'id').to.be.a('string');",
+          "    pm.expect(Number.isInteger(json.created), 'created is a Unix time in seconds').to.equal(true);",
+          "    pm.expect(json.model, 'model').to.be.a('string');",
+          "    pm.expect(json.choices, 'choices').to.be.an('array').that.is.not.empty;",
+          "    json.choices.forEach((choice, i) => {",
+          "      const message = choice.message || {};",
+          "      pm.expect(choice.index, `choices[${i}].index`).to.equal(i);",
+          "      pm.expect(message.role, `choices[${i}].message.role`).to.equal('assistant');",
+          "      pm.expect(choice.finish_reason, `choices[${i}].finish_reason`).to.be.oneOf(['stop', 'length', 'tool_calls']);",
+          "      const content = message.content;",
+          "      pm.expect(content === null || typeof content === 'string', 'content is a string or null').to.equal(true);",
+          "      if ('reasoning_content' in message) pm.expect(message.reasoning_content, 'reasoning_content').to.be.a('string');",
+          "    });",
+          "  });",
+          "  pm.test('chat.completion: usage has prompt, completion and total tokens', () => {",
+          "    const usage = json.usage || {};",
+          "    ['prompt_tokens', 'completion_tokens', 'total_tokens'].forEach((key) => {",
+          "      pm.expect(isCount(usage[key]), `usage.${key} is a whole number`).to.equal(true);",
+          "    });",
+          "    pm.expect(usage.total_tokens, 'total_tokens').to.be.at.least(usage.prompt_tokens);",
+          "  });",
+          "}",
+          "",
+          "// Streams: parse the server-sent events the way a client has to, check the",
+          "// grammar, and leave a summary in the local variable \"sse\" for the request's",
+          "// own tests. Comment lines (\": ka\", \": queued · position 2 of 3 · ...\") are",
+          "// not part of the reply.",
+          "if (mediaType === 'text/event-stream') {",
+          "  const events = [];",
+          "  const comments = [];",
+          "  let data = [];",
+          "  for (const line of pm.response.text().split(/\\r?\\n/)) {",
+          "    if (line === '') {",
+          "      if (data.length > 0) events.push(data.join('\\n'));",
+          "      data = [];",
+          "    } else if (line.startsWith(':')) {",
+          "      comments.push(line.slice(1).trim());",
+          "    } else if (line.startsWith('data:')) {",
+          "      data.push(line.slice('data:'.length).replace(/^ /, ''));",
+          "    }",
+          "  }",
+          "  if (data.length > 0) events.push(data.join('\\n'));",
+          "",
+          "  const payloads = [];",
+          "  const notJson = [];",
+          "  for (const event of events) {",
+          "    if (event === '[DONE]') continue;",
+          "    try {",
+          "      payloads.push(JSON.parse(event));",
+          "    } catch (_err) {",
+          "      notJson.push(event);",
+          "    }",
+          "  }",
+          "",
+          "  const sse = {",
+          "    comments,",
+          "    chunks: payloads.filter((payload) => !isObject(payload.error)),",
+          "    error: (payloads.find((payload) => isObject(payload.error)) || {}).error || null,",
+          "    content: '',",
+          "    reasoning: '',",
+          "    toolCalls: [],",
+          "    finishReason: null,",
+          "    usage: null,",
+          "  };",
+          "  for (const chunk of sse.chunks) {",
+          "    // The usage chunk has \"choices\": []. Check for that before indexing choices[0].",
+          "    if (Array.isArray(chunk.choices) && chunk.choices.length === 0) {",
+          "      sse.usage = chunk.usage || null;",
+          "      continue;",
+          "    }",
+          "    for (const choice of chunk.choices || []) {",
+          "      const delta = choice.delta || {};",
+          "      if (typeof delta.content === 'string') sse.content += delta.content;",
+          "      if (typeof delta.reasoning_content === 'string') sse.reasoning += delta.reasoning_content;",
+          "      // Tool calls arrive whole on this API, but other providers send fragments: join them by index.",
+          "      for (const part of delta.tool_calls || []) {",
+          "        sse.toolCalls[part.index] = sse.toolCalls[part.index] || { id: '', type: '', name: '', arguments: '' };",
+          "        const call = sse.toolCalls[part.index];",
+          "        const fn = part.function || {};",
+          "        if (part.id) call.id = part.id;",
+          "        if (part.type) call.type = part.type;",
+          "        if (fn.name) call.name = fn.name;",
+          "        if (typeof fn.arguments === 'string') call.arguments += fn.arguments;",
+          "      }",
+          "      if (choice.finish_reason) sse.finishReason = choice.finish_reason;",
+          "    }",
+          "  }",
+          "  pm.variables.set('sse', JSON.stringify(sse));",
+          "",
+          "  pm.test('stream: every data payload is JSON, and the last event is data: [DONE]', () => {",
+          "    pm.expect(notJson, 'payloads that are not JSON').to.be.empty;",
+          "    pm.expect(events.length, 'data events').to.be.above(0);",
+          "    pm.expect(events[events.length - 1], 'last event').to.equal('[DONE]');",
+          "    pm.expect(events.filter((event) => event === '[DONE]').length, '[DONE] events').to.equal(1);",
+          "  });",
+          "  if (sse.error) {",
+          "    pm.test('stream: the error event (shape A) is the last payload, with no usage chunk', () => {",
+          "      pm.expect(sse.error.type, 'error.type').to.be.oneOf([",
+          "        'server_busy',",
+          "        'upstream_unreachable',",
+          "        'upstream_timeout',",
+          "        'upstream_error',",
+          "        'preempted',",
+          "      ]);",
+          "      pm.expect(sse.error.message, 'error.message').to.be.a('string');",
+          "      pm.expect(isObject(payloads[payloads.length - 1].error), 'the error event is last').to.equal(true);",
+          "      pm.expect(sse.usage, 'usage').to.equal(null);",
+          "    });",
+          "  } else {",
+          "    pm.test('stream: chat.completion.chunk objects of one reply, with a finish_reason', () => {",
+          "      pm.expect(sse.chunks, 'chunks').to.not.be.empty;",
+          "      for (const chunk of sse.chunks) {",
+          "        pm.expect(chunk.object, 'object').to.equal('chat.completion.chunk');",
+          "        pm.expect(chunk.id, 'id').to.equal(sse.chunks[0].id);",
+          "        pm.expect(chunk.choices, 'choices').to.be.an('array');",
+          "      }",
+          "      pm.expect(sse.finishReason, 'finish_reason').to.be.oneOf(['stop', 'length', 'tool_calls']);",
+          "    });",
+          "    pm.test('stream: the last chunk has \"choices\": [] and the usage', () => {",
+          "      const last = sse.chunks[sse.chunks.length - 1];",
+          "      pm.expect(last.choices, 'choices of the last chunk').to.be.an('array').that.is.empty;",
+          "      for (const key of ['prompt_tokens', 'completion_tokens', 'total_tokens']) {",
+          "        pm.expect(isCount((last.usage || {})[key]), `usage.${key} is a whole number`).to.equal(true);",
+          "      }",
+          "    });",
+          "  }",
+          "} else {",
+          "  pm.variables.set('sse', '');",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://api.molochai.dev/api/v1",
+      "type": "string",
+      "description": "Base URL of the /v1 requests. The environments override it."
+    },
+    {
+      "key": "model",
+      "value": "glm-5.3-flash",
+      "type": "string",
+      "description": "Model id for the chat requests. Pick an id with available: true from List models."
+    },
+    {
+      "key": "accountUrl",
+      "value": "",
+      "type": "string",
+      "description": "Leave empty: derived from baseUrl (trailing /v1 replaced with /auth/me) before each request."
+    }
+  ]
+}
