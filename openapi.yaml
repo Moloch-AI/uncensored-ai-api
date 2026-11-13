@@ -396,11 +396,13 @@ components:
       schema:
         type: integer
         minimum: 0
+      example: 60
     X-RateLimit-Remaining:
       description: Requests left in the current one-minute window.
       schema:
         type: integer
         minimum: 0
+      example: 59
     Retry-After:
       description: |
         Seconds until a request will be accepted again. Sent with the rate-limit
@@ -409,6 +411,7 @@ components:
       schema:
         type: integer
         minimum: 0
+      example: 12
 
   responses:
     Unauthenticated:
@@ -670,6 +673,13 @@ components:
         Reasoning on/off and effort are fixed per model and cannot be changed
         per request. Default sampling when omitted: temperature 0.6 / top_p 0.95
         for models with reasoning on, 0.7 / 0.8 for models with reasoning off.
+      # `example` is deprecated in OpenAPI 3.1 in favor of `examples`, but some
+      # API clients (Insomnia) build the request body they import from it.
+      example:
+        model: glm-5.3-flash
+        messages:
+          - role: user
+            content: Explain server-sent events in two sentences.
       properties:
         model:
           type: string
